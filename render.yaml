@@ -1,0 +1,50 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy: connect this repo in Render Dashboard → New → Blueprint
+# Or: render deploy
+#
+# Before first deploy:
+#   1. Enable Neon Auth + create neon_auth schema on your Neon branch
+#   2. Run migrations against DATABASE_URL
+#   3. Set sync: false secrets in Render Dashboard (marked below)
+
+services:
+  - type: web
+    name: copare-api
+    runtime: node
+    region: oregon # match your Neon AWS region (e.g. oregon, virginia)
+    plan: starter
+    buildCommand: cd api && npm ci && npm run build
+    startCommand: cd api && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: NEON_AUTH_BASE_URL
+        sync: false
+      - key: PORT
+        value: "10000"
+
+  - type: worker
+    name: copare-notifications
+    runtime: node
+    region: oregon
+    plan: starter
+    buildCommand: cd api && npm ci && npm run build
+    startCommand: cd api && npm run worker:notifications
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      # APNs — configure when ready for push
+      - key: APNS_KEY_ID
+        sync: false
+      - key: APNS_TEAM_ID
+        sync: false
+      - key: APNS_BUNDLE_ID
+        sync: false
+      - key: APNS_PRIVATE_KEY
+        sync: false
