@@ -6,3 +6,6 @@ dist/
 xcuserdata/
 DerivedData/
 .build/
+ios/Config/Secrets.xcconfig
+ios/*.xcodeproj/
+ios/*.xcworkspace/

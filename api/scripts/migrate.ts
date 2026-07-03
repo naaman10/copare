@@ -2,16 +2,13 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { loadEnv } from '../src/env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../migrations');
 
 async function main(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    console.error('DATABASE_URL is required');
-    process.exit(1);
-  }
+  const { DATABASE_URL: connectionString } = loadEnv();
 
   const client = new pg.Client({ connectionString });
   await client.connect();

@@ -2,8 +2,9 @@ import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+import { jwtVerify } from 'jose';
 import { loadEnv } from './env.js';
+import { neonAuthIssuer, neonAuthJWKS } from './lib/neon-auth.js';
 import { authMiddleware } from './middleware/auth.js';
 import { groupsRoutes } from './routes/groups.js';
 import { conversationsRoutes } from './routes/conversations.js';
@@ -12,9 +13,6 @@ import { devicesRoutes } from './routes/devices.js';
 import { wsHub } from './ws/hub.js';
 
 const env = loadEnv();
-const jwksUrl = new URL('/.well-known/jwks.json', env.NEON_AUTH_BASE_URL);
-const JWKS = createRemoteJWKSet(jwksUrl);
-const issuer = new URL(env.NEON_AUTH_BASE_URL).origin;
 
 const app = new Hono();
 
@@ -43,7 +41,7 @@ app.get(
 
     let userId: string;
     try {
-      const { payload } = await jwtVerify(token, JWKS, { issuer });
+      const { payload } = await jwtVerify(token, neonAuthJWKS, { issuer: neonAuthIssuer });
       if (!payload.sub) throw new Error('no sub');
       userId = payload.sub;
     } catch {

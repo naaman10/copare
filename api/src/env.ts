@@ -1,4 +1,10 @@
+import { config } from 'dotenv';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+
+// Load api/.env in local dev; production env vars come from the host (e.g. Render).
+config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
 
 const envSchema = z.object({
   DATABASE_URL: z.string().url(),

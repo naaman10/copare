@@ -1,15 +1,10 @@
 import { createMiddleware } from 'hono/factory';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { loadEnv } from '../env.js';
+import { jwtVerify } from 'jose';
+import { neonAuthIssuer, neonAuthJWKS } from '../lib/neon-auth.js';
 
 export type AuthVariables = {
   userId: string;
 };
-
-const env = loadEnv();
-const jwksUrl = new URL('/.well-known/jwks.json', env.NEON_AUTH_BASE_URL);
-const JWKS = createRemoteJWKSet(jwksUrl);
-const issuer = new URL(env.NEON_AUTH_BASE_URL).origin;
 
 export const authMiddleware = createMiddleware<{ Variables: AuthVariables }>(
   async (c, next) => {
@@ -20,7 +15,7 @@ export const authMiddleware = createMiddleware<{ Variables: AuthVariables }>(
 
     const token = header.slice('Bearer '.length);
     try {
-      const { payload } = await jwtVerify(token, JWKS, { issuer });
+      const { payload } = await jwtVerify(token, neonAuthJWKS, { issuer: neonAuthIssuer });
       if (!payload.sub) {
         return c.json({ error: 'Invalid token' }, 401);
       }

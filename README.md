@@ -9,7 +9,7 @@ copare/
 ├── api/                 Hono API (REST + WebSocket) — deploy to Render
 ├── migrations/          Postgres schema + RLS policies (Neon)
 ├── render.yaml            Render Blueprint (API + notification worker)
-└── ios/                   Native iOS app (to be added)
+└── ios/                   Native iOS app (SwiftUI + XcodeGen)
 ```
 
 ## Architecture
@@ -82,6 +82,17 @@ All `/v1/*` routes require `Authorization: Bearer <neon-auth-jwt>`.
    ```
 5. Update `region` in `render.yaml` to match your Neon AWS region
 
+## iOS app
+
+See [`ios/README.md`](ios/README.md) for Xcode setup.
+
+```bash
+cd ios
+cp Config/Secrets.xcconfig.example Config/Secrets.xcconfig
+xcodegen generate
+open Copare.xcodeproj
+```
+
 ## iOS integration notes
 
 - Auth: call Neon Auth REST endpoints directly; store JWT in Keychain
@@ -91,7 +102,6 @@ All `/v1/*` routes require `Authorization: Bearer <neon-auth-jwt>`.
 
 ## Next steps
 
-- [ ] Xcode project (`ios/`)
-- [ ] Invitation email delivery
+- [ ] Invitation email delivery + deep links
 - [ ] APNs integration in notification worker
 - [ ] Redis pub/sub when scaling API beyond one instance
