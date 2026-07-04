@@ -14,7 +14,7 @@ services:
     runtime: node
     region: oregon # match your Neon AWS region (e.g. oregon, virginia)
     plan: starter
-    buildCommand: cd api && npm ci && npm run build
+    buildCommand: cd api && npm ci --include=dev && npm run build
     startCommand: cd api && npm start
     healthCheckPath: /health
     envVars:
@@ -32,7 +32,7 @@ services:
     runtime: node
     region: oregon
     plan: starter
-    buildCommand: cd api && npm ci && npm run build
+    buildCommand: cd api && npm ci --include=dev && npm run build
     startCommand: cd api && npm run worker:notifications
     envVars:
       - key: NODE_ENV
