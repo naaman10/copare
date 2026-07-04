@@ -22,7 +22,11 @@ export type Env = z.infer<typeof apiEnvSchema>;
 export function loadDatabaseEnv(): DatabaseEnv {
   const parsed = databaseEnvSchema.safeParse(process.env);
   if (!parsed.success) {
-    console.error('Invalid environment:', parsed.error.flatten().fieldErrors);
+    const errors = parsed.error.flatten().fieldErrors;
+    console.error('Invalid environment:', errors);
+    if (errors.DATABASE_URL) {
+      console.error('Set DATABASE_URL in the Render Dashboard (Environment tab).');
+    }
     process.exit(1);
   }
   return parsed.data;
@@ -31,7 +35,14 @@ export function loadDatabaseEnv(): DatabaseEnv {
 export function loadEnv(): Env {
   const parsed = apiEnvSchema.safeParse(process.env);
   if (!parsed.success) {
-    console.error('Invalid environment:', parsed.error.flatten().fieldErrors);
+    const errors = parsed.error.flatten().fieldErrors;
+    console.error('Invalid environment:', errors);
+    if (errors.NEON_AUTH_BASE_URL) {
+      console.error('Set NEON_AUTH_BASE_URL in the Render Dashboard (Environment tab).');
+    }
+    if (errors.DATABASE_URL) {
+      console.error('Set DATABASE_URL in the Render Dashboard (Environment tab).');
+    }
     process.exit(1);
   }
   return parsed.data;

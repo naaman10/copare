@@ -61,14 +61,19 @@ async function main(): Promise<void> {
   console.log('[notifications] worker started');
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const processed = await processBatch();
-    if (processed === 0) {
+    try {
+      const processed = await processBatch();
+      if (processed === 0) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      }
+    } catch (err) {
+      console.error('[notifications] batch error, retrying…', err);
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     }
   }
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error('[notifications] fatal', err);
   process.exit(1);
 });

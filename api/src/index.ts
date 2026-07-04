@@ -63,9 +63,12 @@ app.get(
   }),
 );
 
-const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
-  console.log(`Copare API listening on http://localhost:${info.port}`);
-});
+const server = serve(
+  { fetch: app.fetch, port: env.PORT, hostname: '0.0.0.0' },
+  (info) => {
+    console.log(`Copare API listening on http://0.0.0.0:${info.port}`);
+  },
+);
 
 injectWebSocket(server);
 
