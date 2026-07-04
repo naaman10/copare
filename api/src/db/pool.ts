@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { loadEnv } from '../env.js';
+import { loadDatabaseEnv } from '../env.js';
 
 const { Pool } = pg;
 
@@ -7,7 +7,7 @@ let pool: pg.Pool | undefined;
 
 export function getPool(): pg.Pool {
   if (!pool) {
-    const env = loadEnv();
+    const env = loadDatabaseEnv();
     pool = new Pool({
       connectionString: env.DATABASE_URL,
       ssl: env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,

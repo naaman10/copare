@@ -12,10 +12,11 @@ services:
   - type: web
     name: copare-api
     runtime: node
+    rootDir: api
     region: oregon # match your Neon AWS region (e.g. oregon, virginia)
     plan: starter
-    buildCommand: cd api && npm ci --include=dev && npm run build
-    startCommand: cd api && npm start
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -30,16 +31,17 @@ services:
   - type: worker
     name: copare-notifications
     runtime: node
+    rootDir: api
     region: oregon
     plan: starter
-    buildCommand: cd api && npm ci --include=dev && npm run build
-    startCommand: cd api && npm run worker:notifications
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run worker:notifications
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
         sync: false
-      # APNs — configure when ready for push
+      # APNs — optional until push notifications are configured
       - key: APNS_KEY_ID
         sync: false
       - key: APNS_TEAM_ID

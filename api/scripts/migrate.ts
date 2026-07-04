@@ -2,13 +2,13 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { loadEnv } from '../src/env.js';
+import { loadDatabaseEnv } from '../src/env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../migrations');
 
 async function main(): Promise<void> {
-  const { DATABASE_URL: connectionString } = loadEnv();
+  const { DATABASE_URL: connectionString } = loadDatabaseEnv();
 
   const client = new pg.Client({ connectionString });
   await client.connect();
