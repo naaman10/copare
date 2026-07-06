@@ -31,10 +31,20 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.copare.app
         INFOPLIST_FILE: Copare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Copare/Copare.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: false
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
+    entitlements:
+      path: Copare/Copare.entitlements
+    capabilities:
+      Push Notifications: true
     info:
       path: Copare/Info.plist
       properties:

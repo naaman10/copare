@@ -73,9 +73,15 @@ Design tokens and components live in `Copare/Design/`:
 
 `com.copare.app` — matches APNs config in `render.yaml`.
 
-## Next steps
+### Push notifications
 
-- [ ] Deep links for invitation tokens (`copare://invite/<token>`)
-- [ ] Push notification registration (`POST /v1/devices`)
-- [ ] Profile avatars and display names from `profiles` table
+Push requires a **physical device** (not the simulator). After sign-in the app registers its APNs token via `POST /v1/devices`.
+
+1. Enable **Push Notifications** for `com.copare.app` in Apple Developer → Identifiers
+2. Create an APNs key (.p8) and set `APNS_*` env vars on the `copare-notifications` Render worker
+3. For debug builds on device, set `APNS_USE_SANDBOX=true` on the worker
+4. Run `xcodegen generate` after pulling (entitlements + new source files)
+
+Notifications show **conversation title** (title), **sender display name** (subtitle), and **message preview** (body).
+
 - [ ] Production `Secrets.xcconfig` pointing at Render

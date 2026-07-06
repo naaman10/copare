@@ -15,7 +15,10 @@ struct GroupMember: Codable, Identifiable, Sendable {
     var id: String { userId }
     let userId: String
     let role: MemberRole
+    let displayName: String?
     let joinedAt: Date
+
+    var name: String { displayName ?? role.label }
 }
 
 enum MemberRole: String, Codable, CaseIterable, Sendable {
@@ -31,6 +34,53 @@ enum MemberRole: String, Codable, CaseIterable, Sendable {
         case .mediatorA: "Mediator A"
         case .mediatorB: "Mediator B"
         }
+    }
+
+    /// Parent ↔ mediator pairs in a co-parenting group.
+    static let sides: [(parent: MemberRole, mediator: MemberRole)] = [
+        (.parentA, .mediatorA),
+        (.parentB, .mediatorB),
+    ]
+
+    var pairedMediator: MemberRole? {
+        switch self {
+        case .parentA: .mediatorA
+        case .parentB: .mediatorB
+        case .mediatorA: .parentA
+        case .mediatorB: .parentB
+        }
+    }
+
+    var sideTitle: String {
+        switch self {
+        case .parentA, .mediatorA: "Parent A & Mediator A"
+        case .parentB, .mediatorB: "Parent B & Mediator B"
+        }
+    }
+
+    static func sideDisplayTitle(
+        parent: GroupMember?,
+        mediator: GroupMember?,
+        fallback: MemberRole
+    ) -> String {
+        if let parentName = parent?.displayName {
+            if let mediatorName = mediator?.displayName {
+                return "\(parentName) & \(mediatorName)"
+            }
+            return parentName
+        }
+        return fallback.sideTitle
+    }
+
+    /// Roles this member is allowed to invite.
+    func invitableRoles(openRoles: Set<MemberRole>) -> [MemberRole] {
+        let permitted: [MemberRole]
+        switch self {
+        case .parentA: permitted = [.parentB, .mediatorA]
+        case .parentB: permitted = [.mediatorB]
+        default: permitted = []
+        }
+        return permitted.filter { openRoles.contains($0) }
     }
 }
 
@@ -56,6 +106,19 @@ struct CopareGroup: Codable, Identifiable, Sendable {
     let members: [GroupMember]?
 
     var memberList: [GroupMember] { members ?? [] }
+
+    func member(for role: MemberRole) -> GroupMember? {
+        memberList.first { $0.role == role }
+    }
+
+    func role(forUserId userId: String) -> MemberRole? {
+        memberList.first { $0.userId == userId }?.role
+    }
+
+    var openRoles: Set<MemberRole> {
+        let taken = Set(memberList.map(\.role))
+        return Set(MemberRole.allCases.filter { !taken.contains($0) && $0 != .parentA })
+    }
 }
 
 struct Conversation: Codable, Identifiable, Sendable {
@@ -77,6 +140,7 @@ struct Message: Codable, Identifiable, Sendable {
     let id: String
     let conversationId: String
     let senderId: String
+    let senderDisplayName: String?
     let parentId: String?
     let rootId: String?
     let body: String
@@ -85,6 +149,8 @@ struct Message: Codable, Identifiable, Sendable {
     let createdAt: Date
     let editedAt: Date?
     let receipts: [MessageReceipt]?
+
+    var senderName: String { senderDisplayName ?? "Member" }
 }
 
 struct Invitation: Codable, Sendable {

@@ -16,10 +16,26 @@ final class AppState {
     var isAuthenticated: Bool { session != nil }
 
     func restoreSession() async {
-        if let restored = await AuthService.shared.restoreSession() {
-            session = restored
+        guard await AuthService.shared.restoreSession() != nil,
+              let user = KeychainStore.loadUser() else {
+            return
+        }
+
+        do {
+            let jwt: String
+            if KeychainStore.loadSessionCookie() != nil {
+                jwt = try await AuthService.shared.refreshJWT()
+            } else if let existing = KeychainStore.loadJWT() {
+                jwt = existing
+            } else {
+                return
+            }
+            session = AuthSession(user: user, jwt: jwt)
             await configureServices()
             webSocket.connect()
+        } catch {
+            KeychainStore.clearSession()
+            session = nil
         }
     }
 
@@ -62,5 +78,6 @@ final class AppState {
         let provider: @Sendable () -> String? = { KeychainStore.loadJWT() }
         await CopareAPI.shared.setJWTProvider(provider)
         webSocket.setJWTProvider { KeychainStore.loadJWT() }
+        await PushNotificationManager.shared.registerForRemoteNotifications()
     }
 }

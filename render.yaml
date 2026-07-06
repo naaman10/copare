@@ -50,3 +50,5 @@ services:
         sync: false
       - key: APNS_PRIVATE_KEY
         sync: false
+      - key: APNS_USE_SANDBOX
+        sync: false

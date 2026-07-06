@@ -1,15 +1,26 @@
 /**
- * Notification outbox worker — runs as a Render Background Worker.
- * Polls notification_outbox and sends APNs push notifications.
- *
- * APNs integration is stubbed until APNS_* env vars are configured.
+ * Notification outbox worker — polls notification_outbox and sends APNs push notifications.
  */
 import { getPool } from '../db/pool.js';
+import {
+  getApnsClient,
+  isApnsConfigured,
+  isInvalidDeviceTokenError,
+  parseMessagePushPayload,
+  sendMessagePush,
+} from '../lib/apns.js';
 
 const POLL_INTERVAL_MS = 5_000;
 const BATCH_SIZE = 50;
 
 async function processBatch(): Promise<number> {
+  if (!isApnsConfigured()) {
+    console.warn('[notifications] APNs not configured — set APNS_* env vars on the worker');
+    return 0;
+  }
+
+  getApnsClient();
+
   const pool = getPool();
   const client = await pool.connect();
 
@@ -28,11 +39,42 @@ async function processBatch(): Promise<number> {
 
     for (const row of rows) {
       try {
-        // TODO: look up device_tokens for row.user_id and send via APNs
-        console.log('[notifications] would send push', {
-          userId: row.user_id,
-          payload: row.payload,
-        });
+        const pushPayload = parseMessagePushPayload(row.payload);
+        if (!pushPayload) {
+          throw new Error('Unsupported notification payload');
+        }
+
+        const { rows: tokens } = await client.query<{ token: string }>(
+          `SELECT token FROM device_tokens WHERE user_id = $1`,
+          [row.user_id],
+        );
+
+        if (tokens.length === 0) {
+          await client.query(
+            `UPDATE notification_outbox SET status = 'sent', sent_at = now() WHERE id = $1`,
+            [row.id],
+          );
+          continue;
+        }
+
+        let delivered = false;
+        for (const { token } of tokens) {
+          try {
+            await sendMessagePush(token, pushPayload);
+            delivered = true;
+          } catch (err) {
+            if (isInvalidDeviceTokenError(err)) {
+              await client.query(`DELETE FROM device_tokens WHERE token = $1`, [token]);
+              console.warn('[notifications] removed invalid device token', token.slice(0, 8));
+              continue;
+            }
+            throw err;
+          }
+        }
+
+        if (!delivered) {
+          throw new Error('No valid device tokens for user');
+        }
 
         await client.query(
           `UPDATE notification_outbox SET status = 'sent', sent_at = now() WHERE id = $1`,
@@ -58,7 +100,11 @@ async function processBatch(): Promise<number> {
 }
 
 async function main(): Promise<void> {
-  console.log('[notifications] worker started');
+  console.log('[notifications] worker started', {
+    apns: isApnsConfigured() ? 'configured' : 'missing APNS_* env',
+    sandbox: process.env.APNS_USE_SANDBOX === 'true',
+  });
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {

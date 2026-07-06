@@ -29,10 +29,12 @@ groupsRoutes.get('/', async (c) => {
             json_agg(json_build_object(
               'userId', gm.user_id,
               'role', gm.role,
+              'displayName', p.display_name,
               'joinedAt', gm.joined_at
-            )) AS members
+            ) ORDER BY gm.role) AS members
      FROM groups g
      JOIN group_members gm ON gm.group_id = g.id
+     LEFT JOIN profiles p ON p.user_id = gm.user_id
      WHERE g.id IN (SELECT group_id FROM group_members WHERE user_id = $1)
      GROUP BY g.id
      ORDER BY g.created_at DESC`,

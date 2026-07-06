@@ -55,6 +55,11 @@ export async function createGroup(
   return group;
 }
 
+const INVITE_PERMISSIONS: Record<string, Array<'parent_b' | 'mediator_a' | 'mediator_b'>> = {
+  parent_a: ['parent_b', 'mediator_a'],
+  parent_b: ['mediator_b'],
+};
+
 export async function createInvitation(
   client: pg.PoolClient,
   groupId: string,
@@ -63,6 +68,36 @@ export async function createInvitation(
   email: string,
 ): Promise<{ id: string; token: string; expiresAt: string }> {
   await assertGroupMember(client, groupId, invitedBy);
+
+  const { rows: inviterRows } = await client.query<{ role: string }>(
+    `SELECT role::text FROM group_members WHERE group_id = $1 AND user_id = $2`,
+    [groupId, invitedBy],
+  );
+  const inviterRole = inviterRows[0]?.role;
+  if (!inviterRole) throw new HttpError(403, 'Not a group member');
+
+  const permitted = INVITE_PERMISSIONS[inviterRole] ?? [];
+  if (!permitted.includes(role)) {
+    throw new HttpError(
+      403,
+      inviterRole === 'parent_a'
+        ? 'Parent A can invite Parent B and Mediator A only'
+        : inviterRole === 'parent_b'
+          ? 'Parent B can invite Mediator B only'
+          : 'You cannot send invitations for this role',
+    );
+  }
+
+  const { rows: filled } = await client.query(
+    `SELECT 1 FROM group_members WHERE group_id = $1 AND role = $2
+     UNION ALL
+     SELECT 1 FROM invitations WHERE group_id = $1 AND role = $2 AND status = 'pending'
+     LIMIT 1`,
+    [groupId, role],
+  );
+  if (filled.length > 0) {
+    throw new HttpError(409, 'This role is already filled or has a pending invitation');
+  }
 
   const token = randomBytes(32).toString('hex');
   const { rows } = await client.query<{ id: string; expires_at: Date }>(
@@ -131,8 +166,12 @@ export async function sendMessage(
   parentId?: string,
   rootId?: string,
 ): Promise<unknown> {
-  const { rows: convRows } = await client.query<{ group_id: string; status: string }>(
-    `SELECT c.group_id, g.status::text
+  const { rows: convRows } = await client.query<{
+    group_id: string;
+    status: string;
+    title: string;
+  }>(
+    `SELECT c.group_id, g.status::text, c.title
      FROM conversations c
      JOIN groups g ON g.id = c.group_id
      WHERE c.id = $1`,
@@ -143,6 +182,12 @@ export async function sendMessage(
   if (conv.status !== 'active') throw new HttpError(403, 'Group is not active');
 
   await assertGroupMember(client, conv.group_id, senderId);
+
+  const { rows: senderRows } = await client.query<{ display_name: string }>(
+    `SELECT display_name FROM profiles WHERE user_id = $1`,
+    [senderId],
+  );
+  const senderDisplayName = senderRows[0]?.display_name ?? 'Someone';
 
   const { rows: existing } = await client.query(
     `SELECT id, conversation_id, sender_id, parent_id, root_id, body, client_id,
@@ -178,8 +223,10 @@ export async function sendMessage(
         JSON.stringify({
           type: 'message.new',
           conversationId,
+          conversationTitle: conv.title,
           messageId: message.id,
           senderId,
+          senderDisplayName,
           preview: body.slice(0, 120),
         }),
       ],

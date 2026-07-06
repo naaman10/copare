@@ -170,6 +170,12 @@ struct MessageBubble: View {
             if isMine { Spacer(minLength: 48) }
 
             VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+                if !isMine {
+                    Text(message.senderName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
                 Text(message.body)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)

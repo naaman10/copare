@@ -68,7 +68,10 @@ actor CopareAPI {
     // MARK: - Messages
 
     func listMessages(conversationId: String, limit: Int = 50) async throws -> [Message] {
-        let response: MessagesResponse = try await get("conversations/\(conversationId)/messages?limit=\(limit)")
+        let response: MessagesResponse = try await get(
+            "conversations/\(conversationId)/messages",
+            query: [URLQueryItem(name: "limit", value: String(limit))]
+        )
         return response.messages.reversed()
     }
 
@@ -94,10 +97,20 @@ actor CopareAPI {
         let _: DeliveredResponse = try await post("messages/\(messageId)/delivered", body: [:])
     }
 
+    func registerDevice(token: String) async throws {
+        let _: OkResponse = try await post(
+            "devices",
+            body: ["token": token, "platform": "ios"]
+        )
+    }
+
     // MARK: - HTTP helpers
 
-    private func get<T: Decodable>(_ path: String) async throws -> T {
-        try await request(path: path, method: "GET", body: nil as [String: String]?)
+    private func get<T: Decodable>(
+        _ path: String,
+        query: [URLQueryItem] = []
+    ) async throws -> T {
+        try await request(path: path, method: "GET", body: nil as [String: String]?, query: query)
     }
 
     private func post<T: Decodable>(
@@ -118,13 +131,14 @@ actor CopareAPI {
         path: String,
         method: String,
         body: [String: String]?,
+        query: [URLQueryItem] = [],
         retried: Bool = false
     ) async throws -> T {
         guard let jwt = currentJWT() else {
             throw CopareError.unauthorized
         }
 
-        var urlRequest = URLRequest(url: baseURL.appendingAPIPath(path))
+        var urlRequest = URLRequest(url: baseURL.appendingAPIPath(path, query: query))
         urlRequest.httpMethod = method
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
@@ -147,7 +161,7 @@ actor CopareAPI {
         if http.statusCode == 401 {
             if !retried {
                 _ = try await AuthService.shared.refreshJWT()
-                return try await request(path: path, method: method, body: body, retried: true)
+                return try await request(path: path, method: method, body: body, query: query, retried: true)
             }
             throw CopareError.unauthorized
         }
@@ -211,9 +225,15 @@ private struct DeliveredResponse: Decodable {
 }
 
 extension URL {
-    func appendingAPIPath(_ path: String) -> URL {
-        path.split(separator: "/").reduce(into: self) { url, component in
+    func appendingAPIPath(_ path: String, query: [URLQueryItem] = []) -> URL {
+        let url = path.split(separator: "/").reduce(into: self) { url, component in
             url.append(path: String(component))
         }
+
+        guard !query.isEmpty, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        components.queryItems = query
+        return components.url ?? url
     }
 }

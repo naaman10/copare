@@ -22,7 +22,7 @@ struct CopareStatusBadge: View {
 }
 
 struct CopareRoleChip: View {
-    let role: MemberRole
+    let member: GroupMember
 
     var body: some View {
         HStack(spacing: 8) {
@@ -33,9 +33,9 @@ struct CopareRoleChip: View {
                 .background(CopareTheme.brand.opacity(0.12), in: Circle())
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(role.label)
+                Text(member.name)
                     .font(.subheadline.weight(.medium))
-                Text("Member")
+                Text(member.role.label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -44,7 +44,7 @@ struct CopareRoleChip: View {
     }
 
     private var icon: String {
-        switch role {
+        switch member.role {
         case .parentA, .parentB: "heart.fill"
         case .mediatorA, .mediatorB: "scale.3d"
         }
