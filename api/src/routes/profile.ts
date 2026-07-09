@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getPool, withTransaction } from '../db/pool.js';
 import type { AuthVariables } from '../middleware/auth.js';
 import { ensureProfileFromAuth, upsertProfile } from '../services/profiles.js';
+import { profileDisplayName } from '../lib/display-names.js';
 
 export const profileRoutes = new Hono<{ Variables: AuthVariables }>();
 
@@ -11,11 +12,10 @@ profileRoutes.get('/profile', async (c) => {
 
   const profile = await withTransaction(async (client) => {
     await ensureProfileFromAuth(client, userId);
-    const { rows } = await client.query<{ display_name: string }>(
-      `SELECT COALESCE(p.display_name, u.name, u.email) AS display_name
-       FROM neon_auth."user" u
-       LEFT JOIN profiles p ON p.user_id = u.id
-       WHERE u.id = $1`,
+    const { rows } = await client.query<{ display_name: string | null }>(
+      `SELECT ${profileDisplayName()} AS display_name
+       FROM profiles p
+       WHERE p.user_id = $1`,
       [userId],
     );
     return rows[0];

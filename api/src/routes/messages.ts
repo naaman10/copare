@@ -9,6 +9,7 @@ import {
   sendMessage,
 } from '../services/groups.js';
 import { HttpError, jsonError } from '../lib/errors.js';
+import { profileDisplayName } from '../lib/display-names.js';
 import { wsHub } from '../ws/hub.js';
 
 export const messagesRoutes = new Hono<{ Variables: AuthVariables }>();
@@ -38,28 +39,26 @@ messagesRoutes.get('/conversations/:conversationId/messages', async (c) => {
   let sql = `
     SELECT m.id, m.conversation_id, m.sender_id, m.parent_id, m.root_id,
            m.body, m.client_id, m.deleted_at, m.created_at, m.edited_at,
-           MAX(COALESCE(NULLIF(TRIM(p.display_name), ''), NULLIF(TRIM(sender_auth.name), ''), sender_auth.email)) AS sender_display_name,
+           MAX(${profileDisplayName('p')}) AS sender_display_name,
            COALESCE(
              (
                SELECT json_agg(
                  json_build_object(
                    'userId', mr.user_id,
-                   'displayName', COALESCE(NULLIF(TRIM(rp.display_name), ''), NULLIF(TRIM(ru.name), ''), ru.email),
+                   'displayName', ${profileDisplayName('rp')},
                    'deliveredAt', mr.delivered_at,
                    'readAt', mr.read_at
                  )
-                 ORDER BY rp.display_name
+                 ORDER BY ${profileDisplayName('rp')}
                )
                FROM message_receipts mr
                LEFT JOIN profiles rp ON rp.user_id = mr.user_id
-               LEFT JOIN neon_auth."user" ru ON ru.id = mr.user_id
                WHERE mr.message_id = m.id
              ),
              '[]'
            ) AS receipts
     FROM messages m
     LEFT JOIN profiles p ON p.user_id = m.sender_id
-    LEFT JOIN neon_auth."user" sender_auth ON sender_auth.id = m.sender_id
     WHERE m.conversation_id = $1 AND m.deleted_at IS NULL`;
 
   if (rootId) {

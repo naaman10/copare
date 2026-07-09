@@ -122,6 +122,11 @@ actor CopareAPI {
         )
     }
 
+    func fetchProfile() async throws -> String? {
+        let response: ProfileResponse = try await get("profile")
+        return response.displayName
+    }
+
     // MARK: - Actions
 
     func listActions(conversationId: String) async throws -> [ConversationAction] {

@@ -8,6 +8,7 @@ import {
   createInvitation,
 } from '../services/groups.js';
 import { ensureProfileFromAuth, upsertProfile } from '../services/profiles.js';
+import { profileDisplayName } from '../lib/display-names.js';
 import { HttpError, jsonError } from '../lib/errors.js';
 
 export const groupsRoutes = new Hono<{ Variables: AuthVariables }>();
@@ -34,13 +35,12 @@ groupsRoutes.get('/', async (c) => {
             json_agg(json_build_object(
               'userId', gm.user_id,
               'role', gm.role,
-              'displayName', COALESCE(NULLIF(TRIM(p.display_name), ''), NULLIF(TRIM(u.name), ''), u.email),
+              'displayName', ${profileDisplayName('p')},
               'joinedAt', gm.joined_at
             ) ORDER BY gm.role) AS members
      FROM groups g
      JOIN group_members gm ON gm.group_id = g.id
      LEFT JOIN profiles p ON p.user_id = gm.user_id
-     LEFT JOIN neon_auth."user" u ON u.id = gm.user_id
      WHERE g.id IN (SELECT group_id FROM group_members WHERE user_id = $1)
      GROUP BY g.id
      ORDER BY g.created_at DESC`,

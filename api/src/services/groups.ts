@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { wsHub } from '../ws/hub.js';
 import { HttpError } from '../lib/errors.js';
 import { createMessageReceipts, logMessageEvent } from './audit.js';
+import { getProfileDisplayName } from './display-names.js';
 
 export async function assertGroupMember(
   client: pg.PoolClient,
@@ -184,14 +185,7 @@ export async function sendMessage(
 
   await assertGroupMember(client, conv.group_id, senderId);
 
-  const { rows: senderRows } = await client.query<{ display_name: string }>(
-    `SELECT COALESCE(NULLIF(TRIM(p.display_name), ''), NULLIF(TRIM(u.name), ''), u.email) AS display_name
-     FROM neon_auth."user" u
-     LEFT JOIN profiles p ON p.user_id = u.id
-     WHERE u.id = $1`,
-    [senderId],
-  );
-  const senderDisplayName = senderRows[0]?.display_name ?? 'Someone';
+  const senderDisplayName = await getProfileDisplayName(client, senderId);
 
     const { rows: existing } = await client.query(
     `SELECT id, conversation_id, sender_id, parent_id, root_id, body, client_id,

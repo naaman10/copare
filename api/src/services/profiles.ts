@@ -1,15 +1,13 @@
 import type pg from 'pg';
 
-/** Ensure every auth user has a profiles row (display name from sign-up / Neon Auth). */
+/** Ensure a profiles row exists. Display name is set explicitly via upsertProfile. */
 export async function ensureProfileFromAuth(
   client: pg.PoolClient,
   userId: string,
 ): Promise<void> {
   await client.query(
     `INSERT INTO profiles (user_id, display_name)
-     SELECT u.id, COALESCE(NULLIF(TRIM(u.name), ''), u.email)
-     FROM neon_auth."user" u
-     WHERE u.id = $1
+     VALUES ($1, '')
      ON CONFLICT (user_id) DO NOTHING`,
     [userId],
   );

@@ -80,9 +80,6 @@ final class AppState {
         let provider: @Sendable () -> String? = { KeychainStore.loadJWT() }
         await CopareAPI.shared.setJWTProvider(provider)
         webSocket.setJWTProvider { KeychainStore.loadJWT() }
-        if let name = session?.user.name, !name.isEmpty {
-            try? await CopareAPI.shared.syncProfile(displayName: name)
-        }
         await PushNotificationManager.shared.registerForRemoteNotifications()
     }
 }

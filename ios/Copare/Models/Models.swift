@@ -18,7 +18,7 @@ struct GroupMember: Codable, Identifiable, Sendable {
     let displayName: String?
     let joinedAt: Date
 
-    var name: String { displayName ?? role.label }
+    var name: String { displayName.nilIfBlank ?? role.label }
 }
 
 extension Optional where Wrapped == String {
@@ -37,11 +37,19 @@ struct MemberDirectory: Sendable {
     }
 
     func displayName(for userId: String) -> String? {
-        byUserId[userId]?.displayName
+        byUserId[userId]?.displayName.nilIfBlank
+    }
+
+    /// profiles.display_name when set, otherwise the member's role label.
+    func resolvedName(userId: String, apiDisplayName: String? = nil) -> String {
+        if let name = apiDisplayName.nilIfBlank ?? displayName(for: userId) {
+            return name
+        }
+        return byUserId[userId]?.role.label ?? "Member"
     }
 
     func name(for userId: String) -> String {
-        byUserId[userId]?.name ?? "Member"
+        resolvedName(userId: userId)
     }
 }
 
@@ -164,10 +172,8 @@ struct MessageReceipt: Codable, Sendable {
     let deliveredAt: Date?
     let readAt: Date?
 
-    var name: String { displayName ?? "Member" }
-
     func resolvedName(using directory: MemberDirectory) -> String {
-        displayName ?? directory.name(for: userId)
+        directory.resolvedName(userId: userId, apiDisplayName: displayName)
     }
 
     enum ReceiptStatus {
@@ -197,10 +203,8 @@ struct Message: Codable, Identifiable, Sendable {
     let editedAt: Date?
     let receipts: [MessageReceipt]?
 
-    var senderName: String { senderDisplayName ?? "Member" }
-
     func senderName(using directory: MemberDirectory) -> String {
-        senderDisplayName ?? directory.name(for: senderId)
+        directory.resolvedName(userId: senderId, apiDisplayName: senderDisplayName)
     }
 
     func updatingReceipt(
@@ -214,7 +218,7 @@ struct Message: Codable, Identifiable, Sendable {
             let existing = updated[index]
             updated[index] = MessageReceipt(
                 userId: existing.userId,
-                displayName: existing.displayName ?? directory.displayName(for: userId),
+                displayName: existing.displayName.nilIfBlank ?? directory.displayName(for: userId),
                 deliveredAt: deliveredAt ?? existing.deliveredAt,
                 readAt: readAt ?? existing.readAt
             )
@@ -281,20 +285,17 @@ struct ConversationAction: Codable, Identifiable, Sendable {
     let resolvedAt: Date?
     let receipts: [MessageReceipt]?
 
-    var creatorName: String { createdByDisplayName ?? "Parent" }
-    var assigneeName: String { assignedToDisplayName ?? "Co-parent" }
-
     func creatorName(using directory: MemberDirectory) -> String {
-        createdByDisplayName.nilIfBlank ?? directory.name(for: createdBy)
+        directory.resolvedName(userId: createdBy, apiDisplayName: createdByDisplayName)
     }
 
     func assigneeName(using directory: MemberDirectory) -> String {
-        assignedToDisplayName.nilIfBlank ?? directory.name(for: assignedTo)
+        directory.resolvedName(userId: assignedTo, apiDisplayName: assignedToDisplayName)
     }
 
     func resolverName(using directory: MemberDirectory) -> String? {
         guard let resolvedBy else { return nil }
-        return resolvedByDisplayName.nilIfBlank ?? directory.name(for: resolvedBy)
+        return directory.resolvedName(userId: resolvedBy, apiDisplayName: resolvedByDisplayName)
     }
 }
 

@@ -3,6 +3,7 @@ import SwiftUI
 struct ProfileView: View {
     @Environment(AppState.self) private var appState
     @State private var inviteToken = ""
+    @State private var acceptDisplayName = ""
     @State private var profileDisplayName: String?
 
     var body: some View {
@@ -38,9 +39,14 @@ struct ProfileView: View {
                                 text: $inviteToken,
                                 autocapitalization: .never
                             )
+                            CopareField(
+                                title: "Display name",
+                                text: $acceptDisplayName,
+                                contentType: .name
+                            )
                             CoparePrimaryButton(
                                 title: "Accept",
-                                isDisabled: inviteToken.isEmpty
+                                isDisabled: inviteToken.isEmpty || acceptDisplayName.isEmpty
                             ) {
                                 Task { await acceptInvitation() }
                             }
@@ -59,18 +65,18 @@ struct ProfileView: View {
             .copareScreenBackground()
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.large)
-            .task { await loadProfileDisplayName() }
+            .task {
+                await loadProfileDisplayName()
+                if acceptDisplayName.isEmpty, let name = appState.session?.user.name?.nilIfBlank {
+                    acceptDisplayName = name
+                }
+            }
         }
     }
 
     private func loadProfileDisplayName() async {
-        guard let userId = appState.session?.user.id else { return }
         do {
-            let groups = try await CopareAPI.shared.listGroups()
-            profileDisplayName = groups
-                .flatMap(\.memberList)
-                .first { $0.userId == userId }?
-                .displayName
+            profileDisplayName = try await CopareAPI.shared.fetchProfile()
         } catch {
             profileDisplayName = nil
         }
@@ -92,10 +98,13 @@ struct ProfileView: View {
     }
 
     private func acceptInvitation() async {
-        guard let name = appState.session?.user.name ?? appState.session?.user.email else { return }
+        let name = acceptDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
         do {
             _ = try await CopareAPI.shared.acceptInvitation(token: inviteToken, displayName: name)
             inviteToken = ""
+            acceptDisplayName = ""
+            await loadProfileDisplayName()
         } catch let error as CopareError {
             appState.errorMessage = error.errorDescription
         } catch {
