@@ -5,6 +5,7 @@ import type { AuthVariables } from '../middleware/auth.js';
 import {
   assertGroupMember,
   markConversationRead,
+  markMessageDelivered,
   sendMessage,
 } from '../services/groups.js';
 import { HttpError, jsonError } from '../lib/errors.js';
@@ -109,11 +110,25 @@ messagesRoutes.post('/conversations/:conversationId/messages', async (c) => {
 messagesRoutes.put('/conversations/:conversationId/read', async (c) => {
   const userId = c.get('userId');
   const conversationId = c.req.param('conversationId');
-  const body = z.object({ lastMessageId: z.string().uuid() }).parse(await c.req.json());
+  const body = z
+    .object({
+      lastMessageId: z.string().uuid().optional(),
+      lastActionId: z.string().uuid().optional(),
+    })
+    .refine((data) => data.lastMessageId || data.lastActionId, {
+      message: 'Provide lastMessageId and/or lastActionId',
+    })
+    .parse(await c.req.json());
 
   try {
     await withTransaction((client) =>
-      markConversationRead(client, conversationId, userId, body.lastMessageId),
+      markConversationRead(
+        client,
+        conversationId,
+        userId,
+        body.lastMessageId,
+        body.lastActionId,
+      ),
     );
     return c.json({ ok: true });
   } catch (err) {
@@ -126,29 +141,9 @@ messagesRoutes.post('/messages/:messageId/delivered', async (c) => {
   const userId = c.get('userId');
   const messageId = c.req.param('messageId');
 
-  const result = await withTransaction(async (client) => {
-    const { rows: msgRows } = await client.query<{ conversation_id: string }>(
-      `SELECT conversation_id FROM messages WHERE id = $1`,
-      [messageId],
-    );
-    if (!msgRows[0]) throw new HttpError(404, 'Message not found');
-
-    const { rows: convRows } = await client.query<{ group_id: string }>(
-      `SELECT group_id FROM conversations WHERE id = $1`,
-      [msgRows[0].conversation_id],
-    );
-    await assertGroupMember(client, convRows[0].group_id, userId);
-
-    const { rows } = await client.query<{ delivered_at: Date }>(
-      `UPDATE message_receipts
-       SET delivered_at = COALESCE(delivered_at, now())
-       WHERE message_id = $1 AND user_id = $2
-       RETURNING delivered_at`,
-      [messageId, userId],
-    );
-
-    return { deliveredAt: rows[0]?.delivered_at?.toISOString() ?? null, groupId: convRows[0].group_id };
-  });
+  const result = await withTransaction((client) =>
+    markMessageDelivered(client, messageId, userId),
+  );
 
   if (result.deliveredAt) {
     const { rows: members } = await getPool().query<{ user_id: string }>(
@@ -157,7 +152,7 @@ messagesRoutes.post('/messages/:messageId/delivered', async (c) => {
     );
     wsHub.sendToUsers(
       members.map((m) => m.user_id).filter((id) => id !== userId),
-      { type: 'message.delivered', messageId, userId, at: result.deliveredAt! },
+      { type: 'message.delivered', messageId, userId, at: result.deliveredAt },
     );
   }
 

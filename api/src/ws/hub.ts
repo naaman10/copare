@@ -6,6 +6,8 @@ export type WsEvent =
   | { type: 'message.read'; messageId: string; userId: string; at: string }
   | { type: 'action.new'; conversationId: string; action: unknown }
   | { type: 'action.updated'; conversationId: string; action: unknown }
+  | { type: 'action.delivered'; actionId: string; userId: string; at: string }
+  | { type: 'action.read'; actionId: string; userId: string; at: string }
   | { type: 'ping' };
 
 type Client = {

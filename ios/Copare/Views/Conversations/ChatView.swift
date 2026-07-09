@@ -28,13 +28,7 @@ final class ChatViewModel {
             async let actionsTask = CopareAPI.shared.listActions(conversationId: conversationId)
             let (messages, actions) = try await (messagesTask, actionsTask)
             timeline = mergeTimeline(messages: messages, actions: actions)
-
-            if let lastMessage = messages.last {
-                try? await CopareAPI.shared.markRead(
-                    conversationId: conversationId,
-                    lastMessageId: lastMessage.id
-                )
-            }
+            await markTimelineSeen(messages: messages, actions: actions)
         } catch let error as CopareError {
             errorMessage = error.errorDescription
         } catch {
@@ -126,9 +120,25 @@ final class ChatViewModel {
                 return
             }
             appendActionIfNeeded(action)
+            Task {
+                try? await CopareAPI.shared.markActionDelivered(actionId: action.id)
+                try? await CopareAPI.shared.markRead(
+                    conversationId: conversationId,
+                    lastActionId: action.id
+                )
+            }
         case "action.updated":
             guard let action = event.action else { return }
             updateAction(action)
+            if action.createdBy != currentUserId && action.resolvedBy != currentUserId {
+                Task {
+                    try? await CopareAPI.shared.markActionDelivered(actionId: action.id)
+                    try? await CopareAPI.shared.markRead(
+                        conversationId: conversationId,
+                        lastActionId: action.id
+                    )
+                }
+            }
         default:
             break
         }
@@ -193,6 +203,18 @@ final class ChatViewModel {
             appendActionIfNeeded(action)
         }
     }
+
+    private func markTimelineSeen(
+        messages: [Message],
+        actions: [ConversationAction]
+    ) async {
+        guard messages.last != nil || actions.last != nil else { return }
+        try? await CopareAPI.shared.markRead(
+            conversationId: conversationId,
+            lastMessageId: messages.last?.id,
+            lastActionId: actions.last?.id
+        )
+    }
 }
 
 struct ChatView: View {
@@ -216,75 +238,34 @@ struct ChatView: View {
         currentUserRole?.isParent == true
     }
 
+    private var currentUserId: String {
+        appState.session?.user.id ?? ""
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(viewModel.timeline) { item in
-                            switch item {
-                            case .message(let message):
-                                MessageBubble(
-                                    message: message,
-                                    isMine: message.senderId == appState.session?.user.id
-                                )
-                            case .action(let action):
-                                ConfirmationRequestCard(
-                                    action: action,
-                                    currentUserId: appState.session?.user.id ?? "",
-                                    isSubmitting: viewModel.isSubmittingAction,
-                                    onConfirm: {
-                                        Task { await viewModel.confirmAction(action) }
-                                    },
-                                    onDecline: { note in
-                                        Task { await viewModel.declineAction(action, responseNote: note) }
-                                    }
-                                )
-                            }
-                        }
-                        .id(item.id)
-                    }
-                    .padding()
+            ChatTimelineView(
+                timeline: viewModel.timeline,
+                currentUserId: currentUserId,
+                isSubmittingAction: viewModel.isSubmittingAction,
+                onConfirm: { action in
+                    Task { await viewModel.confirmAction(action) }
+                },
+                onDecline: { action, note in
+                    Task { await viewModel.declineAction(action, responseNote: note) }
                 }
-                .onChange(of: viewModel.timeline.count) { _, _ in
-                    if let last = viewModel.timeline.last {
-                        withAnimation {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
-                    }
-                }
-            }
+            )
 
             Divider()
 
-            HStack(spacing: 12) {
-                if canCreateActions {
-                    Button {
-                        showCreateAction = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(CopareTheme.brand)
-                    }
-                    .disabled(viewModel.isSubmittingAction)
-                }
-
-                TextField("Message", text: $viewModel.draft, axis: .vertical)
-                    .lineLimit(1...4)
-                    .textFieldStyle(.roundedBorder)
-
-                Button {
-                    Task { await viewModel.send() }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                }
-                .disabled(
-                    viewModel.isSending
-                        || viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
-            }
-            .padding()
+            ChatComposerBar(
+                draft: $viewModel.draft,
+                canCreateActions: canCreateActions,
+                isSending: viewModel.isSending,
+                isSubmittingAction: viewModel.isSubmittingAction,
+                onCreateAction: { showCreateAction = true },
+                onSend: { Task { await viewModel.send() } }
+            )
         }
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -296,7 +277,7 @@ struct ChatView: View {
         .onAppear {
             viewModel = ChatViewModel(
                 conversationId: conversation.id,
-                currentUserId: appState.session?.user.id ?? ""
+                currentUserId: currentUserId
             )
         }
         .task { await viewModel.load() }
@@ -316,6 +297,103 @@ struct ChatView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
+    }
+}
+
+private struct ChatTimelineView: View {
+    let timeline: [TimelineItem]
+    let currentUserId: String
+    let isSubmittingAction: Bool
+    let onConfirm: (ConversationAction) -> Void
+    let onDecline: (ConversationAction, String?) -> Void
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(timeline) { item in
+                        TimelineRowView(
+                            item: item,
+                            currentUserId: currentUserId,
+                            isSubmittingAction: isSubmittingAction,
+                            onConfirm: onConfirm,
+                            onDecline: onDecline
+                        )
+                        .id(item.id)
+                    }
+                }
+                .padding()
+            }
+            .onChange(of: timeline.count) { _, _ in
+                guard let last = timeline.last else { return }
+                withAnimation {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                }
+            }
+        }
+    }
+}
+
+private struct TimelineRowView: View {
+    let item: TimelineItem
+    let currentUserId: String
+    let isSubmittingAction: Bool
+    let onConfirm: (ConversationAction) -> Void
+    let onDecline: (ConversationAction, String?) -> Void
+
+    var body: some View {
+        switch item {
+        case .message(let message):
+            MessageBubble(
+                message: message,
+                isMine: message.senderId == currentUserId
+            )
+        case .action(let action):
+            ConfirmationRequestCard(
+                action: action,
+                currentUserId: currentUserId,
+                isSubmitting: isSubmittingAction,
+                onConfirm: { onConfirm(action) },
+                onDecline: { note in onDecline(action, note) }
+            )
+        }
+    }
+}
+
+private struct ChatComposerBar: View {
+    @Binding var draft: String
+    let canCreateActions: Bool
+    let isSending: Bool
+    let isSubmittingAction: Bool
+    let onCreateAction: () -> Void
+    let onSend: () -> Void
+
+    private var canSend: Bool {
+        !isSending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if canCreateActions {
+                Button(action: onCreateAction) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(CopareTheme.brand)
+                }
+                .disabled(isSubmittingAction)
+            }
+
+            TextField("Message", text: $draft, axis: .vertical)
+                .lineLimit(1...4)
+                .textFieldStyle(.roundedBorder)
+
+            Button(action: onSend) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title2)
+            }
+            .disabled(!canSend)
+        }
+        .padding()
     }
 }
 

@@ -191,6 +191,7 @@ struct ConversationAction: Codable, Identifiable, Sendable {
     let resolvedByDisplayName: String?
     let createdAt: Date
     let resolvedAt: Date?
+    let receipts: [MessageReceipt]?
 
     var creatorName: String { createdByDisplayName ?? "Parent" }
     var assigneeName: String { assignedToDisplayName ?? "Co-parent" }

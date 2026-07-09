@@ -2,6 +2,7 @@ import type pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import { wsHub } from '../ws/hub.js';
 import { HttpError } from '../lib/errors.js';
+import { createMessageReceipts, logMessageEvent } from './audit.js';
 
 export async function assertGroupMember(
   client: pg.PoolClient,
@@ -210,11 +211,9 @@ export async function sendMessage(
   const memberIds = await getGroupMemberIds(client, conv.group_id);
   const recipientIds = memberIds.filter((id) => id !== senderId);
 
+  await createMessageReceipts(client, message.id, memberIds, senderId);
+
   for (const recipientId of recipientIds) {
-    await client.query(
-      `INSERT INTO message_receipts (message_id, user_id) VALUES ($1, $2)`,
-      [message.id, recipientId],
-    );
     await client.query(
       `INSERT INTO notification_outbox (user_id, payload)
        VALUES ($1, $2)`,
@@ -233,11 +232,7 @@ export async function sendMessage(
     );
   }
 
-  await client.query(
-    `INSERT INTO message_events (message_id, event_type, actor_id)
-     VALUES ($1, 'created', $2)`,
-    [message.id, senderId],
-  );
+  await logMessageEvent(client, message.id, 'created', senderId);
 
   await client.query(
     `UPDATE conversations SET last_message_at = now() WHERE id = $1`,
@@ -257,7 +252,8 @@ export async function markConversationRead(
   client: pg.PoolClient,
   conversationId: string,
   userId: string,
-  lastMessageId: string,
+  lastMessageId?: string,
+  lastActionId?: string,
 ): Promise<void> {
   const { rows: convRows } = await client.query<{ group_id: string }>(
     `SELECT group_id FROM conversations WHERE id = $1`,
@@ -267,33 +263,108 @@ export async function markConversationRead(
   await assertGroupMember(client, convRows[0].group_id, userId);
 
   const now = new Date().toISOString();
-
-  await client.query(
-    `INSERT INTO conversation_read_cursors (user_id, conversation_id, last_read_message_id, last_read_at)
-     VALUES ($1, $2, $3, now())
-     ON CONFLICT (user_id, conversation_id)
-     DO UPDATE SET last_read_message_id = EXCLUDED.last_read_message_id, last_read_at = now()`,
-    [userId, conversationId, lastMessageId],
-  );
-
-  const { rows: updated } = await client.query<{ message_id: string }>(
-    `UPDATE message_receipts mr
-     SET read_at = COALESCE(read_at, now())
-     FROM messages m
-     WHERE mr.message_id = m.id
-       AND m.conversation_id = $1
-       AND mr.user_id = $2
-       AND mr.read_at IS NULL
-       AND m.created_at <= (SELECT created_at FROM messages WHERE id = $3)
-     RETURNING mr.message_id`,
-    [conversationId, userId, lastMessageId],
-  );
-
   const memberIds = await getGroupMemberIds(client, convRows[0].group_id);
-  for (const row of updated) {
-    wsHub.sendToUsers(
-      memberIds.filter((id) => id !== userId),
-      { type: 'message.read', messageId: row.message_id, userId, at: now },
+
+  if (lastMessageId) {
+    await client.query(
+      `INSERT INTO conversation_read_cursors (user_id, conversation_id, last_read_message_id, last_read_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (user_id, conversation_id)
+       DO UPDATE SET
+         last_read_message_id = COALESCE(EXCLUDED.last_read_message_id, conversation_read_cursors.last_read_message_id),
+         last_read_at = now()`,
+      [userId, conversationId, lastMessageId],
     );
+
+    const { rows: updated } = await client.query<{ message_id: string }>(
+      `UPDATE message_receipts mr
+       SET read_at = COALESCE(read_at, now())
+       FROM messages m
+       WHERE mr.message_id = m.id
+         AND m.conversation_id = $1
+         AND mr.user_id = $2
+         AND mr.read_at IS NULL
+         AND m.created_at <= (SELECT created_at FROM messages WHERE id = $3)
+       RETURNING mr.message_id`,
+      [conversationId, userId, lastMessageId],
+    );
+
+    for (const row of updated) {
+      await logMessageEvent(client, row.message_id, 'read', userId, { at: now });
+      wsHub.sendToUsers(
+        memberIds.filter((id) => id !== userId),
+        { type: 'message.read', messageId: row.message_id, userId, at: now },
+      );
+    }
   }
+
+  if (lastActionId) {
+    await client.query(
+      `INSERT INTO conversation_read_cursors (user_id, conversation_id, last_read_action_id, last_read_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (user_id, conversation_id)
+       DO UPDATE SET
+         last_read_action_id = COALESCE(EXCLUDED.last_read_action_id, conversation_read_cursors.last_read_action_id),
+         last_read_at = now()`,
+      [userId, conversationId, lastActionId],
+    );
+
+    const { rows: updatedActions } = await client.query<{ action_id: string }>(
+      `UPDATE action_receipts ar
+       SET read_at = COALESCE(read_at, now())
+       FROM conversation_actions ca
+       WHERE ar.action_id = ca.id
+         AND ca.conversation_id = $1
+         AND ar.user_id = $2
+         AND ar.read_at IS NULL
+         AND ca.created_at <= (SELECT created_at FROM conversation_actions WHERE id = $3)
+       RETURNING ar.action_id`,
+      [conversationId, userId, lastActionId],
+    );
+
+    for (const row of updatedActions) {
+      await client.query(
+        `INSERT INTO action_events (action_id, event_type, actor_id, metadata)
+         VALUES ($1, 'read', $2, $3)`,
+        [row.action_id, userId, JSON.stringify({ at: now })],
+      );
+      wsHub.sendToUsers(
+        memberIds.filter((id) => id !== userId),
+        { type: 'action.read', actionId: row.action_id, userId, at: now },
+      );
+    }
+  }
+}
+
+export async function markMessageDelivered(
+  client: pg.PoolClient,
+  messageId: string,
+  userId: string,
+): Promise<{ deliveredAt: string | null; groupId: string }> {
+  const { rows: msgRows } = await client.query<{ conversation_id: string }>(
+    `SELECT conversation_id FROM messages WHERE id = $1`,
+    [messageId],
+  );
+  if (!msgRows[0]) throw new HttpError(404, 'Message not found');
+
+  const { rows: convRows } = await client.query<{ group_id: string }>(
+    `SELECT group_id FROM conversations WHERE id = $1`,
+    [msgRows[0].conversation_id],
+  );
+  await assertGroupMember(client, convRows[0].group_id, userId);
+
+  const { rows } = await client.query<{ delivered_at: Date }>(
+    `UPDATE message_receipts
+     SET delivered_at = COALESCE(delivered_at, now())
+     WHERE message_id = $1 AND user_id = $2
+     RETURNING delivered_at`,
+    [messageId, userId],
+  );
+
+  const deliveredAt = rows[0]?.delivered_at?.toISOString() ?? null;
+  if (deliveredAt) {
+    await logMessageEvent(client, messageId, 'delivered', userId, { at: deliveredAt });
+  }
+
+  return { deliveredAt, groupId: convRows[0].group_id };
 }

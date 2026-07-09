@@ -86,15 +86,26 @@ actor CopareAPI {
         return response.message
     }
 
-    func markRead(conversationId: String, lastMessageId: String) async throws {
+    func markRead(
+        conversationId: String,
+        lastMessageId: String? = nil,
+        lastActionId: String? = nil
+    ) async throws {
+        var body: [String: String] = [:]
+        if let lastMessageId { body["lastMessageId"] = lastMessageId }
+        if let lastActionId { body["lastActionId"] = lastActionId }
         let _: OkResponse = try await put(
             "conversations/\(conversationId)/read",
-            body: ["lastMessageId": lastMessageId]
+            body: body
         )
     }
 
     func markDelivered(messageId: String) async throws {
         let _: DeliveredResponse = try await post("messages/\(messageId)/delivered", body: [:])
+    }
+
+    func markActionDelivered(actionId: String) async throws {
+        let _: DeliveredResponse = try await post("actions/\(actionId)/delivered", body: [:])
     }
 
     func registerDevice(token: String) async throws {

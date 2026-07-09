@@ -1,14 +1,16 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { withTransaction } from '../db/pool.js';
+import { getPool, withTransaction } from '../db/pool.js';
 import type { AuthVariables } from '../middleware/auth.js';
 import {
   confirmAction,
   createConfirmationRequest,
   declineAction,
   listConversationActions,
+  markActionDelivered,
 } from '../services/actions.js';
 import { HttpError, jsonError } from '../lib/errors.js';
+import { wsHub } from '../ws/hub.js';
 
 export const actionsRoutes = new Hono<{ Variables: AuthVariables }>();
 
@@ -81,4 +83,26 @@ actionsRoutes.post('/actions/:actionId/decline', async (c) => {
     if (err instanceof HttpError) return jsonError(c, err);
     throw err;
   }
+});
+
+actionsRoutes.post('/actions/:actionId/delivered', async (c) => {
+  const userId = c.get('userId');
+  const actionId = c.req.param('actionId');
+
+  const result = await withTransaction((client) =>
+    markActionDelivered(client, actionId, userId),
+  );
+
+  if (result.deliveredAt) {
+    const { rows: members } = await getPool().query<{ user_id: string }>(
+      `SELECT user_id FROM group_members WHERE group_id = $1`,
+      [result.groupId],
+    );
+    wsHub.sendToUsers(
+      members.map((m) => m.user_id).filter((id) => id !== userId),
+      { type: 'action.delivered', actionId, userId, at: result.deliveredAt },
+    );
+  }
+
+  return c.json({ deliveredAt: result.deliveredAt });
 });

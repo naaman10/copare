@@ -2,6 +2,10 @@ import type pg from 'pg';
 import { wsHub } from '../ws/hub.js';
 import { HttpError } from '../lib/errors.js';
 import { assertGroupMember, getGroupMemberIds } from './groups.js';
+import {
+  createActionReceipts,
+  logActionEvent,
+} from './audit.js';
 
 const ACTION_SELECT = `
   SELECT ca.id, ca.conversation_id, ca.group_id,
@@ -11,11 +15,22 @@ const ACTION_SELECT = `
          ca.created_at, ca.resolved_at,
          creator.display_name AS created_by_display_name,
          assignee.display_name AS assigned_to_display_name,
-         resolver.display_name AS resolved_by_display_name
+         resolver.display_name AS resolved_by_display_name,
+         COALESCE(
+           json_agg(
+             json_build_object(
+               'userId', ar.user_id,
+               'deliveredAt', ar.delivered_at,
+               'readAt', ar.read_at
+             )
+           ) FILTER (WHERE ar.user_id IS NOT NULL),
+           '[]'
+         ) AS receipts
   FROM conversation_actions ca
   LEFT JOIN profiles creator ON creator.user_id = ca.created_by
   LEFT JOIN profiles assignee ON assignee.user_id = ca.assigned_to
-  LEFT JOIN profiles resolver ON resolver.user_id = ca.resolved_by`;
+  LEFT JOIN profiles resolver ON resolver.user_id = ca.resolved_by
+  LEFT JOIN action_receipts ar ON ar.action_id = ca.id`;
 
 export async function assertParentMember(
   client: pg.PoolClient,
@@ -76,7 +91,10 @@ async function fetchActionById(
   client: pg.PoolClient,
   actionId: string,
 ): Promise<Record<string, unknown>> {
-  const { rows } = await client.query(`${ACTION_SELECT} WHERE ca.id = $1`, [actionId]);
+  const { rows } = await client.query(
+    `${ACTION_SELECT} WHERE ca.id = $1 GROUP BY ca.id`,
+    [actionId],
+  );
   if (!rows[0]) throw new HttpError(404, 'Action not found');
   return rows[0];
 }
@@ -92,6 +110,7 @@ export async function listConversationActions(
   const { rows } = await client.query(
     `${ACTION_SELECT}
      WHERE ca.conversation_id = $1
+     GROUP BY ca.id
      ORDER BY ca.created_at ASC`,
     [conversationId],
   );
@@ -127,8 +146,12 @@ export async function createConfirmationRequest(
     [conversationId, conv.groupId, userId, assignedTo, statement],
   );
 
-  const action = await fetchActionById(client, inserted[0].id);
+  const actionId = inserted[0].id;
   const memberIds = await getGroupMemberIds(client, conv.groupId);
+  await createActionReceipts(client, actionId, memberIds, userId);
+  await logActionEvent(client, actionId, 'created', userId, { statement });
+
+  const action = await fetchActionById(client, actionId);
   const recipientIds = memberIds.filter((id) => id !== userId);
 
   wsHub.sendToUsers(recipientIds, {
@@ -145,7 +168,7 @@ export async function createConfirmationRequest(
         type: 'action.new',
         conversationId,
         conversationTitle: conv.title,
-        actionId: inserted[0].id,
+        actionId,
         createdBy: userId,
         createdByDisplayName: creatorDisplayName,
         preview: statement.slice(0, 120),
@@ -154,6 +177,38 @@ export async function createConfirmationRequest(
   );
 
   return action;
+}
+
+export async function markActionDelivered(
+  client: pg.PoolClient,
+  actionId: string,
+  userId: string,
+): Promise<{ deliveredAt: string | null; groupId: string }> {
+  const { rows: actionRows } = await client.query<{
+    group_id: string;
+    conversation_id: string;
+  }>(
+    `SELECT group_id, conversation_id FROM conversation_actions WHERE id = $1`,
+    [actionId],
+  );
+  if (!actionRows[0]) throw new HttpError(404, 'Action not found');
+
+  await assertGroupMember(client, actionRows[0].group_id, userId);
+
+  const { rows } = await client.query<{ delivered_at: Date }>(
+    `UPDATE action_receipts
+     SET delivered_at = COALESCE(delivered_at, now())
+     WHERE action_id = $1 AND user_id = $2
+     RETURNING delivered_at`,
+    [actionId, userId],
+  );
+
+  const deliveredAt = rows[0]?.delivered_at?.toISOString() ?? null;
+  if (deliveredAt) {
+    await logActionEvent(client, actionId, 'delivered', userId, { at: deliveredAt });
+  }
+
+  return { deliveredAt, groupId: actionRows[0].group_id };
 }
 
 export async function confirmAction(
@@ -207,6 +262,24 @@ async function resolveAction(
      SET status = $1, resolved_at = now(), resolved_by = $2, response_note = $3
      WHERE id = $4`,
     [status, userId, responseNote ?? null, actionId],
+  );
+
+  await logActionEvent(client, actionId, status, userId, {
+    responseNote: responseNote ?? null,
+  });
+
+  // Resolver has seen the outcome; others must re-read the updated action.
+  await client.query(
+    `UPDATE action_receipts
+     SET read_at = now(), delivered_at = COALESCE(delivered_at, now())
+     WHERE action_id = $1 AND user_id = $2`,
+    [actionId, userId],
+  );
+  await client.query(
+    `UPDATE action_receipts
+     SET read_at = NULL
+     WHERE action_id = $1 AND user_id != $2`,
+    [actionId, userId],
   );
 
   const action = await fetchActionById(client, actionId);
