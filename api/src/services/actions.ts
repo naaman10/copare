@@ -13,9 +13,9 @@ const ACTION_SELECT = `
          ca.statement, ca.response_note,
          ca.created_by, ca.assigned_to, ca.resolved_by,
          ca.created_at, ca.resolved_at,
-         creator.display_name AS created_by_display_name,
-         assignee.display_name AS assigned_to_display_name,
-         resolver.display_name AS resolved_by_display_name,
+         MAX(creator.display_name) AS created_by_display_name,
+         MAX(assignee.display_name) AS assigned_to_display_name,
+         MAX(resolver.display_name) AS resolved_by_display_name,
          COALESCE(
            json_agg(
              json_build_object(
