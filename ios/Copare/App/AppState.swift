@@ -47,7 +47,9 @@ final class AppState {
 
     func signUp(email: String, password: String, name: String) async {
         await authenticate {
-            try await AuthService.shared.signUp(email: email, password: password, name: name)
+            let session = try await AuthService.shared.signUp(email: email, password: password, name: name)
+            try? await CopareAPI.shared.syncProfile(displayName: name)
+            return session
         }
     }
 
@@ -78,6 +80,9 @@ final class AppState {
         let provider: @Sendable () -> String? = { KeychainStore.loadJWT() }
         await CopareAPI.shared.setJWTProvider(provider)
         webSocket.setJWTProvider { KeychainStore.loadJWT() }
+        if let name = session?.user.name, !name.isEmpty {
+            try? await CopareAPI.shared.syncProfile(displayName: name)
+        }
         await PushNotificationManager.shared.registerForRemoteNotifications()
     }
 }

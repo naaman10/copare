@@ -21,6 +21,22 @@ struct GroupMember: Codable, Identifiable, Sendable {
     var name: String { displayName ?? role.label }
 }
 
+struct MemberDirectory: Sendable {
+    private let byUserId: [String: GroupMember]
+
+    init(members: [GroupMember]) {
+        byUserId = Dictionary(uniqueKeysWithValues: members.map { ($0.userId, $0) })
+    }
+
+    func displayName(for userId: String) -> String? {
+        byUserId[userId]?.displayName
+    }
+
+    func name(for userId: String) -> String {
+        byUserId[userId]?.name ?? "Member"
+    }
+}
+
 enum MemberRole: String, Codable, CaseIterable, Sendable {
     case parentA = "parent_a"
     case parentB = "parent_b"
@@ -63,11 +79,11 @@ enum MemberRole: String, Codable, CaseIterable, Sendable {
         mediator: GroupMember?,
         fallback: MemberRole
     ) -> String {
-        if let parentName = parent?.displayName {
-            if let mediatorName = mediator?.displayName {
-                return "\(parentName) & \(mediatorName)"
+        if let parent {
+            if let mediator {
+                return "\(parent.name) & \(mediator.name)"
             }
-            return parentName
+            return parent.name
         }
         return fallback.sideTitle
     }
@@ -136,8 +152,27 @@ struct Conversation: Codable, Identifiable, Sendable {
 
 struct MessageReceipt: Codable, Sendable {
     let userId: String
+    let displayName: String?
     let deliveredAt: Date?
     let readAt: Date?
+
+    var name: String { displayName ?? "Member" }
+
+    func resolvedName(using directory: MemberDirectory) -> String {
+        displayName ?? directory.name(for: userId)
+    }
+
+    enum ReceiptStatus {
+        case read
+        case delivered
+        case pending
+    }
+
+    var status: ReceiptStatus {
+        if readAt != nil { return .read }
+        if deliveredAt != nil { return .delivered }
+        return .pending
+    }
 }
 
 struct Message: Codable, Identifiable, Sendable {
@@ -155,6 +190,51 @@ struct Message: Codable, Identifiable, Sendable {
     let receipts: [MessageReceipt]?
 
     var senderName: String { senderDisplayName ?? "Member" }
+
+    func senderName(using directory: MemberDirectory) -> String {
+        senderDisplayName ?? directory.name(for: senderId)
+    }
+
+    func updatingReceipt(
+        userId: String,
+        directory: MemberDirectory,
+        deliveredAt: Date? = nil,
+        readAt: Date? = nil
+    ) -> Message {
+        var updated = receipts ?? []
+        if let index = updated.firstIndex(where: { $0.userId == userId }) {
+            let existing = updated[index]
+            updated[index] = MessageReceipt(
+                userId: existing.userId,
+                displayName: existing.displayName ?? directory.displayName(for: userId),
+                deliveredAt: deliveredAt ?? existing.deliveredAt,
+                readAt: readAt ?? existing.readAt
+            )
+        } else {
+            updated.append(
+                MessageReceipt(
+                    userId: userId,
+                    displayName: directory.displayName(for: userId),
+                    deliveredAt: deliveredAt,
+                    readAt: readAt
+                )
+            )
+        }
+        return Message(
+            id: id,
+            conversationId: conversationId,
+            senderId: senderId,
+            senderDisplayName: senderDisplayName,
+            parentId: parentId,
+            rootId: rootId,
+            body: body,
+            clientId: clientId,
+            deletedAt: deletedAt,
+            createdAt: createdAt,
+            editedAt: editedAt,
+            receipts: updated
+        )
+    }
 }
 
 enum ConversationActionType: String, Codable, Sendable {
@@ -195,6 +275,19 @@ struct ConversationAction: Codable, Identifiable, Sendable {
 
     var creatorName: String { createdByDisplayName ?? "Parent" }
     var assigneeName: String { assignedToDisplayName ?? "Co-parent" }
+
+    func creatorName(using directory: MemberDirectory) -> String {
+        createdByDisplayName ?? directory.name(for: createdBy)
+    }
+
+    func assigneeName(using directory: MemberDirectory) -> String {
+        assignedToDisplayName ?? directory.name(for: assignedTo)
+    }
+
+    func resolverName(using directory: MemberDirectory) -> String? {
+        guard let resolvedBy else { return nil }
+        return resolvedByDisplayName ?? directory.name(for: resolvedBy)
+    }
 }
 
 enum TimelineItem: Identifiable, Sendable {

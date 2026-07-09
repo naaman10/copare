@@ -185,19 +185,24 @@ export async function sendMessage(
   await assertGroupMember(client, conv.group_id, senderId);
 
   const { rows: senderRows } = await client.query<{ display_name: string }>(
-    `SELECT display_name FROM profiles WHERE user_id = $1`,
+    `SELECT COALESCE(NULLIF(TRIM(p.display_name), ''), NULLIF(TRIM(u.name), ''), u.email) AS display_name
+     FROM neon_auth."user" u
+     LEFT JOIN profiles p ON p.user_id = u.id
+     WHERE u.id = $1`,
     [senderId],
   );
   const senderDisplayName = senderRows[0]?.display_name ?? 'Someone';
 
-  const { rows: existing } = await client.query(
+    const { rows: existing } = await client.query(
     `SELECT id, conversation_id, sender_id, parent_id, root_id, body, client_id,
             deleted_at, created_at, edited_at
      FROM messages
      WHERE conversation_id = $1 AND sender_id = $2 AND client_id = $3`,
     [conversationId, senderId, clientId],
   );
-  if (existing[0]) return existing[0];
+  if (existing[0]) {
+    return { ...existing[0], sender_display_name: senderDisplayName };
+  }
 
   const { rows: inserted } = await client.query(
     `INSERT INTO messages (conversation_id, sender_id, parent_id, root_id, body, client_id)
@@ -207,6 +212,10 @@ export async function sendMessage(
     [conversationId, senderId, parentId ?? null, rootId ?? null, body, clientId],
   );
   const message = inserted[0];
+  const enrichedMessage = {
+    ...message,
+    sender_display_name: senderDisplayName,
+  };
 
   const memberIds = await getGroupMemberIds(client, conv.group_id);
   const recipientIds = memberIds.filter((id) => id !== senderId);
@@ -242,10 +251,10 @@ export async function sendMessage(
   wsHub.sendToUsers(recipientIds, {
     type: 'message.new',
     conversationId,
-    message,
+    message: enrichedMessage,
   });
 
-  return message;
+  return enrichedMessage;
 }
 
 export async function markConversationRead(

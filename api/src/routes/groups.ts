@@ -7,6 +7,7 @@ import {
   createGroup,
   createInvitation,
 } from '../services/groups.js';
+import { ensureProfileFromAuth, upsertProfile } from '../services/profiles.js';
 import { HttpError, jsonError } from '../lib/errors.js';
 
 export const groupsRoutes = new Hono<{ Variables: AuthVariables }>();
@@ -15,26 +16,31 @@ groupsRoutes.post('/', async (c) => {
   const userId = c.get('userId');
   const body = z.object({ displayName: z.string().min(1).max(100) }).parse(await c.req.json());
 
-  const group = await withTransaction((client) =>
-    createGroup(client, userId, body.displayName),
-  );
+  const group = await withTransaction(async (client) => {
+    await upsertProfile(client, userId, body.displayName);
+    return createGroup(client, userId, body.displayName);
+  });
 
   return c.json({ group }, 201);
 });
 
 groupsRoutes.get('/', async (c) => {
   const userId = c.get('userId');
+
+  await withTransaction((client) => ensureProfileFromAuth(client, userId));
+
   const { rows } = await getPool().query(
     `SELECT g.id, g.status, g.created_at, g.activated_at,
             json_agg(json_build_object(
               'userId', gm.user_id,
               'role', gm.role,
-              'displayName', p.display_name,
+              'displayName', COALESCE(NULLIF(TRIM(p.display_name), ''), NULLIF(TRIM(u.name), ''), u.email),
               'joinedAt', gm.joined_at
             ) ORDER BY gm.role) AS members
      FROM groups g
      JOIN group_members gm ON gm.group_id = g.id
      LEFT JOIN profiles p ON p.user_id = gm.user_id
+     LEFT JOIN neon_auth."user" u ON u.id = gm.user_id
      WHERE g.id IN (SELECT group_id FROM group_members WHERE user_id = $1)
      GROUP BY g.id
      ORDER BY g.created_at DESC`,

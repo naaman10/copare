@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @MainActor
 @Observable
@@ -12,10 +13,12 @@ final class ChatViewModel {
 
     private let conversationId: String
     private let currentUserId: String
+    private let memberDirectory: MemberDirectory
 
-    init(conversationId: String, currentUserId: String) {
+    init(conversationId: String, currentUserId: String, members: [GroupMember] = []) {
         self.conversationId = conversationId
         self.currentUserId = currentUserId
+        self.memberDirectory = MemberDirectory(members: members)
     }
 
     func load() async {
@@ -139,9 +142,54 @@ final class ChatViewModel {
                     )
                 }
             }
+        case "message.delivered":
+            guard let messageId = event.messageId,
+                  let userId = event.userId,
+                  let at = parseEventDate(event.at) else {
+                return
+            }
+            updateMessageReceipt(messageId: messageId, userId: userId, deliveredAt: at)
+        case "message.read":
+            guard let messageId = event.messageId,
+                  let userId = event.userId,
+                  let at = parseEventDate(event.at) else {
+                return
+            }
+            updateMessageReceipt(messageId: messageId, userId: userId, readAt: at)
         default:
             break
         }
+    }
+
+    private func parseEventDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+
+    private func updateMessageReceipt(
+        messageId: String,
+        userId: String,
+        deliveredAt: Date? = nil,
+        readAt: Date? = nil
+    ) {
+        guard let index = timeline.firstIndex(where: {
+            if case .message(let message) = $0 { return message.id == messageId }
+            return false
+        }), case .message(let message) = timeline[index] else {
+            return
+        }
+        timeline[index] = .message(
+            message.updatingReceipt(
+                userId: userId,
+                directory: memberDirectory,
+                deliveredAt: deliveredAt,
+                readAt: readAt
+            )
+        )
     }
 
     private func resolveAction(
@@ -221,16 +269,27 @@ struct ChatView: View {
     @Environment(AppState.self) private var appState
     let conversation: Conversation
     let currentUserRole: MemberRole?
+    let members: [GroupMember]
 
     @State private var viewModel: ChatViewModel
     @State private var showCreateAction = false
 
-    init(conversation: Conversation, currentUserRole: MemberRole? = nil) {
+    private var memberDirectory: MemberDirectory {
+        MemberDirectory(members: members)
+    }
+
+    init(
+        conversation: Conversation,
+        currentUserRole: MemberRole? = nil,
+        members: [GroupMember] = []
+    ) {
         self.conversation = conversation
         self.currentUserRole = currentUserRole
+        self.members = members
         _viewModel = State(initialValue: ChatViewModel(
             conversationId: conversation.id,
-            currentUserId: ""
+            currentUserId: "",
+            members: members
         ))
     }
 
@@ -247,6 +306,7 @@ struct ChatView: View {
             ChatTimelineView(
                 timeline: viewModel.timeline,
                 currentUserId: currentUserId,
+                memberDirectory: memberDirectory,
                 isSubmittingAction: viewModel.isSubmittingAction,
                 onConfirm: { action in
                     Task { await viewModel.confirmAction(action) }
@@ -269,6 +329,7 @@ struct ChatView: View {
         }
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
+        .copareHidesTabBarOnPush()
         .overlay {
             if viewModel.isLoading && viewModel.timeline.isEmpty {
                 ProgressView()
@@ -277,7 +338,8 @@ struct ChatView: View {
         .onAppear {
             viewModel = ChatViewModel(
                 conversationId: conversation.id,
-                currentUserId: currentUserId
+                currentUserId: currentUserId,
+                members: members
             )
         }
         .task { await viewModel.load() }
@@ -303,6 +365,7 @@ struct ChatView: View {
 private struct ChatTimelineView: View {
     let timeline: [TimelineItem]
     let currentUserId: String
+    let memberDirectory: MemberDirectory
     let isSubmittingAction: Bool
     let onConfirm: (ConversationAction) -> Void
     let onDecline: (ConversationAction, String?) -> Void
@@ -315,6 +378,7 @@ private struct ChatTimelineView: View {
                         TimelineRowView(
                             item: item,
                             currentUserId: currentUserId,
+                            memberDirectory: memberDirectory,
                             isSubmittingAction: isSubmittingAction,
                             onConfirm: onConfirm,
                             onDecline: onDecline
@@ -337,6 +401,7 @@ private struct ChatTimelineView: View {
 private struct TimelineRowView: View {
     let item: TimelineItem
     let currentUserId: String
+    let memberDirectory: MemberDirectory
     let isSubmittingAction: Bool
     let onConfirm: (ConversationAction) -> Void
     let onDecline: (ConversationAction, String?) -> Void
@@ -346,12 +411,15 @@ private struct TimelineRowView: View {
         case .message(let message):
             MessageBubble(
                 message: message,
-                isMine: message.senderId == currentUserId
+                isMine: message.senderId == currentUserId,
+                currentUserId: currentUserId,
+                memberDirectory: memberDirectory
             )
         case .action(let action):
             ConfirmationRequestCard(
                 action: action,
                 currentUserId: currentUserId,
+                memberDirectory: memberDirectory,
                 isSubmitting: isSubmittingAction,
                 onConfirm: { onConfirm(action) },
                 onDecline: { note in onDecline(action, note) }
@@ -400,6 +468,7 @@ private struct ChatComposerBar: View {
 struct ConfirmationRequestCard: View {
     let action: ConversationAction
     let currentUserId: String
+    let memberDirectory: MemberDirectory
     let isSubmitting: Bool
     let onConfirm: () -> Void
     let onDecline: (String?) -> Void
@@ -435,7 +504,7 @@ struct ConfirmationRequestCard: View {
                         .background(statusColor.opacity(0.12), in: Capsule())
                 }
 
-                Text("From \(action.creatorName) to \(action.assigneeName)")
+                Text("From \(action.creatorName(using: memberDirectory)) to \(action.assigneeName(using: memberDirectory))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -574,6 +643,10 @@ struct DeclineConfirmationView: View {
 struct MessageBubble: View {
     let message: Message
     let isMine: Bool
+    let currentUserId: String
+    let memberDirectory: MemberDirectory
+
+    @State private var showReadStatus = false
 
     var body: some View {
         HStack {
@@ -581,7 +654,7 @@ struct MessageBubble: View {
 
             VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
                 if !isMine {
-                    Text(message.senderName)
+                    Text(message.senderName(using: memberDirectory))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -592,6 +665,10 @@ struct MessageBubble: View {
                     .background(isMine ? Color.accentColor : Color(.systemGray5))
                     .foregroundStyle(isMine ? .white : .primary)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .onLongPressGesture(minimumDuration: 0.45) {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showReadStatus = true
+                    }
 
                 Text(message.createdAt, style: .time)
                     .font(.caption2)
@@ -600,5 +677,132 @@ struct MessageBubble: View {
 
             if !isMine { Spacer(minLength: 48) }
         }
+        .sheet(isPresented: $showReadStatus) {
+            MessageReadStatusSheet(
+                message: message,
+                currentUserId: currentUserId,
+                memberDirectory: memberDirectory
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+struct MessageReadStatusSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let message: Message
+    let currentUserId: String
+    let memberDirectory: MemberDirectory
+
+    private var receipts: [MessageReceipt] {
+        message.receipts ?? []
+    }
+
+    private var readReceipts: [MessageReceipt] {
+        receipts.filter { $0.readAt != nil }
+            .sorted { ($0.readAt ?? .distantPast) < ($1.readAt ?? .distantPast) }
+    }
+
+    private var deliveredOnlyReceipts: [MessageReceipt] {
+        receipts.filter { $0.deliveredAt != nil && $0.readAt == nil }
+    }
+
+    private var pendingReceipts: [MessageReceipt] {
+        receipts.filter { $0.deliveredAt == nil && $0.readAt == nil }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: CopareTheme.sectionSpacing) {
+                    if receipts.isEmpty {
+                        CopareCard {
+                            Text("Read receipts are not available for this message yet.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        if !readReceipts.isEmpty {
+                            receiptSection(
+                                title: "Seen by",
+                                systemImage: "eye.fill",
+                                tint: CopareTheme.sage,
+                                receipts: readReceipts,
+                                dateKeyPath: \.readAt
+                            )
+                        }
+
+                        if !deliveredOnlyReceipts.isEmpty {
+                            receiptSection(
+                                title: "Delivered to",
+                                systemImage: "checkmark",
+                                tint: CopareTheme.amber,
+                                receipts: deliveredOnlyReceipts,
+                                dateKeyPath: \.deliveredAt
+                            )
+                        }
+
+                        if !pendingReceipts.isEmpty {
+                            receiptSection(
+                                title: "Not yet received",
+                                systemImage: "clock",
+                                tint: .secondary,
+                                receipts: pendingReceipts,
+                                dateKeyPath: nil
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, CopareTheme.horizontalPadding)
+                .padding(.vertical, 16)
+            }
+            .copareScreenBackground()
+            .navigationTitle("Message status")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func receiptSection(
+        title: String,
+        systemImage: String,
+        tint: Color,
+        receipts: [MessageReceipt],
+        dateKeyPath: KeyPath<MessageReceipt, Date?>?
+    ) -> some View {
+        CopareCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Label(title, systemImage: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tint)
+
+                ForEach(receipts, id: \.userId) { receipt in
+                    HStack {
+                        Text(label(for: receipt))
+                            .font(.subheadline)
+                        Spacer()
+                        if let dateKeyPath, let date = receipt[keyPath: dateKeyPath] {
+                            Text(date, style: .relative)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func label(for receipt: MessageReceipt) -> String {
+        if receipt.userId == currentUserId { return "You" }
+        let name = receipt.resolvedName(using: memberDirectory)
+        if receipt.userId == message.senderId { return "\(name) (sender)" }
+        return name
     }
 }

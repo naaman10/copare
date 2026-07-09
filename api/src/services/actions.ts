@@ -17,20 +17,26 @@ const ACTION_SELECT = `
          MAX(assignee.display_name) AS assigned_to_display_name,
          MAX(resolver.display_name) AS resolved_by_display_name,
          COALESCE(
-           json_agg(
-             json_build_object(
-               'userId', ar.user_id,
-               'deliveredAt', ar.delivered_at,
-               'readAt', ar.read_at
+           (
+             SELECT json_agg(
+               json_build_object(
+                 'userId', ar.user_id,
+                 'displayName', rp.display_name,
+                 'deliveredAt', ar.delivered_at,
+                 'readAt', ar.read_at
+               )
+               ORDER BY rp.display_name
              )
-           ) FILTER (WHERE ar.user_id IS NOT NULL),
+             FROM action_receipts ar
+             LEFT JOIN profiles rp ON rp.user_id = ar.user_id
+             WHERE ar.action_id = ca.id
+           ),
            '[]'
          ) AS receipts
   FROM conversation_actions ca
   LEFT JOIN profiles creator ON creator.user_id = ca.created_by
   LEFT JOIN profiles assignee ON assignee.user_id = ca.assigned_to
-  LEFT JOIN profiles resolver ON resolver.user_id = ca.resolved_by
-  LEFT JOIN action_receipts ar ON ar.action_id = ca.id`;
+  LEFT JOIN profiles resolver ON resolver.user_id = ca.resolved_by`;
 
 export async function assertParentMember(
   client: pg.PoolClient,

@@ -3,6 +3,7 @@ import SwiftUI
 struct ProfileView: View {
     @Environment(AppState.self) private var appState
     @State private var inviteToken = ""
+    @State private var profileDisplayName: String?
 
     var body: some View {
         NavigationStack {
@@ -12,7 +13,7 @@ struct ProfileView: View {
                         CopareCard {
                             VStack(alignment: .leading, spacing: 12) {
                                 CopareSectionHeader(title: "Account")
-                                LabeledContent("Name", value: user.name ?? "—")
+                                LabeledContent("Name", value: profileDisplayName ?? user.name ?? "—")
                                 LabeledContent("Email", value: user.email)
                             }
                         }
@@ -58,6 +59,20 @@ struct ProfileView: View {
             .copareScreenBackground()
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.large)
+            .task { await loadProfileDisplayName() }
+        }
+    }
+
+    private func loadProfileDisplayName() async {
+        guard let userId = appState.session?.user.id else { return }
+        do {
+            let groups = try await CopareAPI.shared.listGroups()
+            profileDisplayName = groups
+                .flatMap(\.memberList)
+                .first { $0.userId == userId }?
+                .displayName
+        } catch {
+            profileDisplayName = nil
         }
     }
 

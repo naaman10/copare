@@ -38,20 +38,28 @@ messagesRoutes.get('/conversations/:conversationId/messages', async (c) => {
   let sql = `
     SELECT m.id, m.conversation_id, m.sender_id, m.parent_id, m.root_id,
            m.body, m.client_id, m.deleted_at, m.created_at, m.edited_at,
-           MAX(p.display_name) AS sender_display_name,
+           MAX(COALESCE(NULLIF(TRIM(p.display_name), ''), NULLIF(TRIM(sender_auth.name), ''), sender_auth.email)) AS sender_display_name,
            COALESCE(
-             json_agg(
-               json_build_object(
-                 'userId', mr.user_id,
-                 'deliveredAt', mr.delivered_at,
-                 'readAt', mr.read_at
+             (
+               SELECT json_agg(
+                 json_build_object(
+                   'userId', mr.user_id,
+                   'displayName', COALESCE(NULLIF(TRIM(rp.display_name), ''), NULLIF(TRIM(ru.name), ''), ru.email),
+                   'deliveredAt', mr.delivered_at,
+                   'readAt', mr.read_at
+                 )
+                 ORDER BY rp.display_name
                )
-             ) FILTER (WHERE mr.user_id IS NOT NULL),
+               FROM message_receipts mr
+               LEFT JOIN profiles rp ON rp.user_id = mr.user_id
+               LEFT JOIN neon_auth."user" ru ON ru.id = mr.user_id
+               WHERE mr.message_id = m.id
+             ),
              '[]'
            ) AS receipts
     FROM messages m
     LEFT JOIN profiles p ON p.user_id = m.sender_id
-    LEFT JOIN message_receipts mr ON mr.message_id = m.id
+    LEFT JOIN neon_auth."user" sender_auth ON sender_auth.id = m.sender_id
     WHERE m.conversation_id = $1 AND m.deleted_at IS NULL`;
 
   if (rootId) {

@@ -11,6 +11,7 @@ import { conversationsRoutes } from './routes/conversations.js';
 import { messagesRoutes } from './routes/messages.js';
 import { devicesRoutes } from './routes/devices.js';
 import { actionsRoutes } from './routes/actions.js';
+import { profileRoutes } from './routes/profile.js';
 import { wsHub } from './ws/hub.js';
 
 const env = loadEnv();
@@ -28,6 +29,7 @@ api.route('/', conversationsRoutes);
 api.route('/', messagesRoutes);
 api.route('/', devicesRoutes);
 api.route('/', actionsRoutes);
+api.route('/', profileRoutes);
 
 app.route('/v1', api);
 

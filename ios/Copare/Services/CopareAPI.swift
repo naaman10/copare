@@ -115,6 +115,13 @@ actor CopareAPI {
         )
     }
 
+    func syncProfile(displayName: String) async throws {
+        let _: ProfileResponse = try await put(
+            "profile",
+            body: ["displayName": displayName]
+        )
+    }
+
     // MARK: - Actions
 
     func listActions(conversationId: String) async throws -> [ConversationAction] {
@@ -276,6 +283,10 @@ private struct ActionsResponse: Decodable {
 
 private struct ActionResponse: Decodable {
     let action: ConversationAction
+}
+
+private struct ProfileResponse: Decodable {
+    let displayName: String?
 }
 
 extension URL {

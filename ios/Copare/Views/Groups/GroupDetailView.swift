@@ -56,7 +56,8 @@ struct GroupDetailView: View {
                     NavigationLink {
                         ConversationsListView(
                             groupId: group.id,
-                            currentUserRole: currentUserRole
+                            currentUserRole: currentUserRole,
+                            members: group.memberList
                         )
                     } label: {
                         CopareCard {
@@ -211,7 +212,7 @@ private struct MemberSlotRow: View {
                 .background(CopareTheme.brand.opacity(0.12), in: Circle())
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(member?.displayName ?? role.label)
+                Text(member?.name ?? role.label)
                     .font(.subheadline.weight(.medium))
                 Text(member == nil ? "Not yet joined" : role.label)
                     .font(.caption)
