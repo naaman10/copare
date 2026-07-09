@@ -54,7 +54,10 @@ struct GroupDetailView: View {
 
                 if group.status == .active {
                     NavigationLink {
-                        ConversationsListView(groupId: group.id)
+                        ConversationsListView(
+                            groupId: group.id,
+                            currentUserRole: currentUserRole
+                        )
                     } label: {
                         CopareCard {
                             HStack {

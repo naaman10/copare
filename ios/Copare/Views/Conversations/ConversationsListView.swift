@@ -38,9 +38,15 @@ final class ConversationsViewModel {
 
 struct ConversationsListView: View {
     let groupId: String
+    let currentUserRole: MemberRole?
 
     @State private var viewModel = ConversationsViewModel()
     @State private var showCreate = false
+
+    init(groupId: String, currentUserRole: MemberRole? = nil) {
+        self.groupId = groupId
+        self.currentUserRole = currentUserRole
+    }
 
     var body: some View {
         Group {
@@ -55,7 +61,10 @@ struct ConversationsListView: View {
             } else {
                 List(viewModel.conversations) { conversation in
                     NavigationLink {
-                        ChatView(conversation: conversation)
+                        ChatView(
+                            conversation: conversation,
+                            currentUserRole: currentUserRole
+                        )
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(conversation.title)

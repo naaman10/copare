@@ -10,6 +10,18 @@ export type MessagePushPayload = {
   preview: string;
 };
 
+export type ActionPushPayload = {
+  type: 'action.new';
+  conversationId: string;
+  conversationTitle: string;
+  actionId: string;
+  createdBy: string;
+  createdByDisplayName: string;
+  preview: string;
+};
+
+export type PushPayload = MessagePushPayload | ActionPushPayload;
+
 let client: ApnsClient | undefined;
 
 export function isApnsConfigured(): boolean {
@@ -41,6 +53,10 @@ export function getApnsClient(): ApnsClient | null {
     });
   }
   return client;
+}
+
+export function parsePushPayload(payload: unknown): PushPayload | null {
+  return parseMessagePushPayload(payload) ?? parseActionPushPayload(payload);
 }
 
 export function parseMessagePushPayload(payload: unknown): MessagePushPayload | null {
@@ -81,30 +97,95 @@ export function parseMessagePushPayload(payload: unknown): MessagePushPayload | 
   };
 }
 
-export async function sendMessagePush(
+export function parseActionPushPayload(payload: unknown): ActionPushPayload | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const data = payload as Record<string, unknown>;
+  if (data.type !== 'action.new') return null;
+
+  const conversationId = data.conversationId;
+  const conversationTitle = data.conversationTitle;
+  const actionId = data.actionId;
+  const createdBy = data.createdBy;
+  const createdByDisplayName = data.createdByDisplayName;
+  const preview = data.preview;
+
+  if (
+    typeof conversationId !== 'string' ||
+    typeof actionId !== 'string' ||
+    typeof createdBy !== 'string' ||
+    typeof preview !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    type: 'action.new',
+    conversationId,
+    conversationTitle:
+      typeof conversationTitle === 'string' && conversationTitle.length > 0
+        ? conversationTitle
+        : 'Conversation',
+    actionId,
+    createdBy,
+    createdByDisplayName:
+      typeof createdByDisplayName === 'string' && createdByDisplayName.length > 0
+        ? createdByDisplayName
+        : 'Someone',
+    preview,
+  };
+}
+
+export async function sendPush(
   deviceToken: string,
-  payload: MessagePushPayload,
+  payload: PushPayload,
 ): Promise<void> {
   const apns = getApnsClient();
   if (!apns) throw new Error('APNs is not configured');
 
+  if (payload.type === 'message.new') {
+    const notification = new Notification(deviceToken, {
+      alert: {
+        title: payload.conversationTitle,
+        subtitle: payload.senderDisplayName,
+        body: payload.preview,
+      },
+      sound: 'default',
+      threadId: payload.conversationId,
+      data: {
+        type: payload.type,
+        conversationId: payload.conversationId,
+        messageId: payload.messageId,
+        senderId: payload.senderId,
+      },
+    });
+    await apns.send(notification);
+    return;
+  }
+
   const notification = new Notification(deviceToken, {
     alert: {
       title: payload.conversationTitle,
-      subtitle: payload.senderDisplayName,
-      body: payload.preview,
+      subtitle: payload.createdByDisplayName,
+      body: `Confirmation requested: ${payload.preview}`,
     },
     sound: 'default',
     threadId: payload.conversationId,
     data: {
       type: payload.type,
       conversationId: payload.conversationId,
-      messageId: payload.messageId,
-      senderId: payload.senderId,
+      actionId: payload.actionId,
+      createdBy: payload.createdBy,
     },
   });
-
   await apns.send(notification);
+}
+
+/** @deprecated Use sendPush */
+export async function sendMessagePush(
+  deviceToken: string,
+  payload: MessagePushPayload,
+): Promise<void> {
+  await sendPush(deviceToken, payload);
 }
 
 export function isInvalidDeviceTokenError(err: unknown): boolean {

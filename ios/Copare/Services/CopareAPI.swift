@@ -104,6 +104,41 @@ actor CopareAPI {
         )
     }
 
+    // MARK: - Actions
+
+    func listActions(conversationId: String) async throws -> [ConversationAction] {
+        let response: ActionsResponse = try await get("conversations/\(conversationId)/actions")
+        return response.actions
+    }
+
+    func createConfirmationRequest(
+        conversationId: String,
+        statement: String
+    ) async throws -> ConversationAction {
+        let response: ActionResponse = try await post(
+            "conversations/\(conversationId)/actions",
+            body: [
+                "actionType": ConversationActionType.confirmationRequest.rawValue,
+                "statement": statement,
+            ]
+        )
+        return response.action
+    }
+
+    func confirmAction(actionId: String) async throws -> ConversationAction {
+        let response: ActionResponse = try await post("actions/\(actionId)/confirm", body: [:])
+        return response.action
+    }
+
+    func declineAction(actionId: String, responseNote: String?) async throws -> ConversationAction {
+        var body: [String: String] = [:]
+        if let responseNote, !responseNote.isEmpty {
+            body["responseNote"] = responseNote
+        }
+        let response: ActionResponse = try await post("actions/\(actionId)/decline", body: body)
+        return response.action
+    }
+
     // MARK: - HTTP helpers
 
     private func get<T: Decodable>(
@@ -222,6 +257,14 @@ private struct OkResponse: Decodable {
 
 private struct DeliveredResponse: Decodable {
     let deliveredAt: String?
+}
+
+private struct ActionsResponse: Decodable {
+    let actions: [ConversationAction]
+}
+
+private struct ActionResponse: Decodable {
+    let action: ConversationAction
 }
 
 extension URL {

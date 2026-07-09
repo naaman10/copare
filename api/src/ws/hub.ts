@@ -4,6 +4,8 @@ export type WsEvent =
   | { type: 'message.new'; conversationId: string; message: unknown }
   | { type: 'message.delivered'; messageId: string; userId: string; at: string }
   | { type: 'message.read'; messageId: string; userId: string; at: string }
+  | { type: 'action.new'; conversationId: string; action: unknown }
+  | { type: 'action.updated'; conversationId: string; action: unknown }
   | { type: 'ping' };
 
 type Client = {

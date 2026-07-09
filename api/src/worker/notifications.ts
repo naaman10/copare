@@ -6,8 +6,8 @@ import {
   getApnsClient,
   isApnsConfigured,
   isInvalidDeviceTokenError,
-  parseMessagePushPayload,
-  sendMessagePush,
+  parsePushPayload,
+  sendPush,
 } from '../lib/apns.js';
 
 const POLL_INTERVAL_MS = 5_000;
@@ -39,7 +39,7 @@ async function processBatch(): Promise<number> {
 
     for (const row of rows) {
       try {
-        const pushPayload = parseMessagePushPayload(row.payload);
+        const pushPayload = parsePushPayload(row.payload);
         if (!pushPayload) {
           throw new Error('Unsupported notification payload');
         }
@@ -60,7 +60,7 @@ async function processBatch(): Promise<number> {
         let delivered = false;
         for (const { token } of tokens) {
           try {
-            await sendMessagePush(token, pushPayload);
+            await sendPush(token, pushPayload);
             delivered = true;
           } catch (err) {
             if (isInvalidDeviceTokenError(err)) {

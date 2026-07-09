@@ -53,17 +53,15 @@ final class WebSocketManager: ObservableObject {
     }
 
     private func listen() {
-        receiveLoopTask = Task { [weak self] in
+        receiveLoopTask = Task { @MainActor [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 do {
                     guard let task = self.task else { return }
                     let message = try await task.receive()
-                    await self.handle(message)
+                    handle(message)
                 } catch {
-                    await MainActor.run {
-                        self.state = .disconnected
-                    }
+                    state = .disconnected
                     return
                 }
             }
@@ -101,5 +99,6 @@ struct WSEvent: Decodable, Sendable {
     let conversationId: String?
     let messageId: String?
     let message: Message?
+    let action: ConversationAction?
     let at: String?
 }

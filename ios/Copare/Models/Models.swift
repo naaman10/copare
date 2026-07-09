@@ -82,6 +82,10 @@ enum MemberRole: String, Codable, CaseIterable, Sendable {
         }
         return permitted.filter { openRoles.contains($0) }
     }
+
+    var isParent: Bool {
+        self == .parentA || self == .parentB
+    }
 }
 
 enum GroupStatus: String, Codable, Sendable {
@@ -151,6 +155,64 @@ struct Message: Codable, Identifiable, Sendable {
     let receipts: [MessageReceipt]?
 
     var senderName: String { senderDisplayName ?? "Member" }
+}
+
+enum ConversationActionType: String, Codable, Sendable {
+    case confirmationRequest = "confirmation_request"
+}
+
+enum ConversationActionStatus: String, Codable, Sendable {
+    case pending
+    case confirmed
+    case declined
+
+    var label: String {
+        switch self {
+        case .pending: "Pending"
+        case .confirmed: "Confirmed"
+        case .declined: "Declined"
+        }
+    }
+}
+
+struct ConversationAction: Codable, Identifiable, Sendable {
+    let id: String
+    let conversationId: String
+    let groupId: String
+    let actionType: ConversationActionType
+    let status: ConversationActionStatus
+    let statement: String
+    let responseNote: String?
+    let createdBy: String
+    let createdByDisplayName: String?
+    let assignedTo: String
+    let assignedToDisplayName: String?
+    let resolvedBy: String?
+    let resolvedByDisplayName: String?
+    let createdAt: Date
+    let resolvedAt: Date?
+
+    var creatorName: String { createdByDisplayName ?? "Parent" }
+    var assigneeName: String { assignedToDisplayName ?? "Co-parent" }
+}
+
+enum TimelineItem: Identifiable, Sendable {
+    case message(Message)
+    case action(ConversationAction)
+
+    var id: String {
+        switch self {
+        case .message(let message): "msg-\(message.id)"
+        case .action(let action): "act-\(action.id)"
+        }
+    }
+
+    var createdAt: Date {
+        switch self {
+        case .message(let message): message.createdAt
+        case .action(let action): action.createdAt
+        }
+    }
 }
 
 struct Invitation: Codable, Sendable {
