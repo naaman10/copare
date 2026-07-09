@@ -7,36 +7,43 @@ import {
   logActionEvent,
 } from './audit.js';
 
+const DISPLAY_NAME = (alias: string) =>
+  `COALESCE(NULLIF(TRIM(${alias}.display_name), ''), NULLIF(TRIM(${alias}_auth.name), ''), ${alias}_auth.email)`;
+
 const ACTION_SELECT = `
   SELECT ca.id, ca.conversation_id, ca.group_id,
          ca.action_type::text, ca.status::text,
          ca.statement, ca.response_note,
          ca.created_by, ca.assigned_to, ca.resolved_by,
          ca.created_at, ca.resolved_at,
-         MAX(creator.display_name) AS created_by_display_name,
-         MAX(assignee.display_name) AS assigned_to_display_name,
-         MAX(resolver.display_name) AS resolved_by_display_name,
+         MAX(${DISPLAY_NAME('creator')}) AS created_by_display_name,
+         MAX(${DISPLAY_NAME('assignee')}) AS assigned_to_display_name,
+         MAX(${DISPLAY_NAME('resolver')}) AS resolved_by_display_name,
          COALESCE(
            (
              SELECT json_agg(
                json_build_object(
                  'userId', ar.user_id,
-                 'displayName', rp.display_name,
+                 'displayName', COALESCE(NULLIF(TRIM(rp.display_name), ''), NULLIF(TRIM(ru.name), ''), ru.email),
                  'deliveredAt', ar.delivered_at,
                  'readAt', ar.read_at
                )
-               ORDER BY rp.display_name
+               ORDER BY COALESCE(NULLIF(TRIM(rp.display_name), ''), NULLIF(TRIM(ru.name), ''), ru.email)
              )
              FROM action_receipts ar
              LEFT JOIN profiles rp ON rp.user_id = ar.user_id
+             LEFT JOIN neon_auth."user" ru ON ru.id = ar.user_id
              WHERE ar.action_id = ca.id
            ),
            '[]'
          ) AS receipts
   FROM conversation_actions ca
   LEFT JOIN profiles creator ON creator.user_id = ca.created_by
+  LEFT JOIN neon_auth."user" creator_auth ON creator_auth.id = ca.created_by
   LEFT JOIN profiles assignee ON assignee.user_id = ca.assigned_to
-  LEFT JOIN profiles resolver ON resolver.user_id = ca.resolved_by`;
+  LEFT JOIN neon_auth."user" assignee_auth ON assignee_auth.id = ca.assigned_to
+  LEFT JOIN profiles resolver ON resolver.user_id = ca.resolved_by
+  LEFT JOIN neon_auth."user" resolver_auth ON resolver_auth.id = ca.resolved_by`;
 
 export async function assertParentMember(
   client: pg.PoolClient,
@@ -138,7 +145,10 @@ export async function createConfirmationRequest(
   const assignedTo = await getCoparentUserId(client, conv.groupId, userId);
 
   const { rows: creatorRows } = await client.query<{ display_name: string }>(
-    `SELECT display_name FROM profiles WHERE user_id = $1`,
+    `SELECT COALESCE(NULLIF(TRIM(p.display_name), ''), NULLIF(TRIM(u.name), ''), u.email) AS display_name
+     FROM neon_auth."user" u
+     LEFT JOIN profiles p ON p.user_id = u.id
+     WHERE u.id = $1`,
     [userId],
   );
   const creatorDisplayName = creatorRows[0]?.display_name ?? 'Someone';

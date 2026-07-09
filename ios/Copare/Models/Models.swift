@@ -21,6 +21,14 @@ struct GroupMember: Codable, Identifiable, Sendable {
     var name: String { displayName ?? role.label }
 }
 
+extension Optional where Wrapped == String {
+    var nilIfBlank: String? {
+        guard let value = self else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 struct MemberDirectory: Sendable {
     private let byUserId: [String: GroupMember]
 
@@ -277,16 +285,16 @@ struct ConversationAction: Codable, Identifiable, Sendable {
     var assigneeName: String { assignedToDisplayName ?? "Co-parent" }
 
     func creatorName(using directory: MemberDirectory) -> String {
-        createdByDisplayName ?? directory.name(for: createdBy)
+        createdByDisplayName.nilIfBlank ?? directory.name(for: createdBy)
     }
 
     func assigneeName(using directory: MemberDirectory) -> String {
-        assignedToDisplayName ?? directory.name(for: assignedTo)
+        assignedToDisplayName.nilIfBlank ?? directory.name(for: assignedTo)
     }
 
     func resolverName(using directory: MemberDirectory) -> String? {
         guard let resolvedBy else { return nil }
-        return resolvedByDisplayName ?? directory.name(for: resolvedBy)
+        return resolvedByDisplayName.nilIfBlank ?? directory.name(for: resolvedBy)
     }
 }
 

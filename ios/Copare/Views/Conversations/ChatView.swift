@@ -12,11 +12,18 @@ final class ChatViewModel {
     var errorMessage: String?
 
     private let conversationId: String
+    private let groupId: String
     private let currentUserId: String
-    private let memberDirectory: MemberDirectory
+    private(set) var memberDirectory: MemberDirectory
 
-    init(conversationId: String, currentUserId: String, members: [GroupMember] = []) {
+    init(
+        conversationId: String,
+        groupId: String,
+        currentUserId: String,
+        members: [GroupMember] = []
+    ) {
         self.conversationId = conversationId
+        self.groupId = groupId
         self.currentUserId = currentUserId
         self.memberDirectory = MemberDirectory(members: members)
     }
@@ -29,7 +36,11 @@ final class ChatViewModel {
         do {
             async let messagesTask = CopareAPI.shared.listMessages(conversationId: conversationId)
             async let actionsTask = CopareAPI.shared.listActions(conversationId: conversationId)
-            let (messages, actions) = try await (messagesTask, actionsTask)
+            async let groupsTask = CopareAPI.shared.listGroups()
+            let (messages, actions, groups) = try await (messagesTask, actionsTask, groupsTask)
+            if let group = groups.first(where: { $0.id == groupId }) {
+                memberDirectory = MemberDirectory(members: group.memberList)
+            }
             timeline = mergeTimeline(messages: messages, actions: actions)
             await markTimelineSeen(messages: messages, actions: actions)
         } catch let error as CopareError {
@@ -274,10 +285,6 @@ struct ChatView: View {
     @State private var viewModel: ChatViewModel
     @State private var showCreateAction = false
 
-    private var memberDirectory: MemberDirectory {
-        MemberDirectory(members: members)
-    }
-
     init(
         conversation: Conversation,
         currentUserRole: MemberRole? = nil,
@@ -288,6 +295,7 @@ struct ChatView: View {
         self.members = members
         _viewModel = State(initialValue: ChatViewModel(
             conversationId: conversation.id,
+            groupId: conversation.groupId,
             currentUserId: "",
             members: members
         ))
@@ -306,7 +314,7 @@ struct ChatView: View {
             ChatTimelineView(
                 timeline: viewModel.timeline,
                 currentUserId: currentUserId,
-                memberDirectory: memberDirectory,
+                memberDirectory: viewModel.memberDirectory,
                 isSubmittingAction: viewModel.isSubmittingAction,
                 onConfirm: { action in
                     Task { await viewModel.confirmAction(action) }
@@ -338,6 +346,7 @@ struct ChatView: View {
         .onAppear {
             viewModel = ChatViewModel(
                 conversationId: conversation.id,
+                groupId: conversation.groupId,
                 currentUserId: currentUserId,
                 members: members
             )
