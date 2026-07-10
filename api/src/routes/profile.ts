@@ -22,7 +22,7 @@ profileRoutes.get('/profile', async (c) => {
   });
 
   return c.json({
-    displayName: profile?.display_name ?? null,
+    displayName: profile?.display_name?.trim() || null,
   });
 });
 

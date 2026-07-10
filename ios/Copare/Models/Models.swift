@@ -42,8 +42,11 @@ struct MemberDirectory: Sendable {
 
     /// profiles.display_name when set, otherwise the member's role label.
     func resolvedName(userId: String, apiDisplayName: String? = nil) -> String {
-        if let name = apiDisplayName.nilIfBlank ?? displayName(for: userId) {
-            return name
+        if let profileName = displayName(for: userId) {
+            return profileName
+        }
+        if let apiName = apiDisplayName.nilIfBlank {
+            return apiName
         }
         return byUserId[userId]?.role.label ?? "Member"
     }
@@ -257,12 +260,14 @@ enum ConversationActionStatus: String, Codable, Sendable {
     case pending
     case confirmed
     case declined
+    case alternativePending = "alternative_pending"
 
     var label: String {
         switch self {
         case .pending: "Pending"
         case .confirmed: "Confirmed"
         case .declined: "Declined"
+        case .alternativePending: "Alternative proposed"
         }
     }
 }
@@ -275,6 +280,8 @@ struct ConversationAction: Codable, Identifiable, Sendable {
     let status: ConversationActionStatus
     let statement: String
     let responseNote: String?
+    let alternativeStatement: String?
+    let acceptedStatement: String?
     let createdBy: String
     let createdByDisplayName: String?
     let assignedTo: String
@@ -296,6 +303,13 @@ struct ConversationAction: Codable, Identifiable, Sendable {
     func resolverName(using directory: MemberDirectory) -> String? {
         guard let resolvedBy else { return nil }
         return directory.resolvedName(userId: resolvedBy, apiDisplayName: resolvedByDisplayName)
+    }
+
+    /// True when the action went through decline / alternative negotiation.
+    var hasNegotiationHistory: Bool {
+        responseNote.nilIfBlank != nil
+            || alternativeStatement.nilIfBlank != nil
+            || acceptedStatement.nilIfBlank != nil
     }
 }
 

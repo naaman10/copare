@@ -13,19 +13,12 @@ final class ChatViewModel {
 
     private let conversationId: String
     private let groupId: String
-    private let currentUserId: String
     private(set) var memberDirectory: MemberDirectory
 
-    init(
-        conversationId: String,
-        groupId: String,
-        currentUserId: String,
-        members: [GroupMember] = []
-    ) {
+    init(conversationId: String, groupId: String) {
         self.conversationId = conversationId
         self.groupId = groupId
-        self.currentUserId = currentUserId
-        self.memberDirectory = MemberDirectory(members: members)
+        self.memberDirectory = MemberDirectory(members: [])
     }
 
     func load() async {
@@ -33,20 +26,27 @@ final class ChatViewModel {
         errorMessage = nil
         defer { isLoading = false }
 
+        await refreshMembers()
+
         do {
             async let messagesTask = CopareAPI.shared.listMessages(conversationId: conversationId)
             async let actionsTask = CopareAPI.shared.listActions(conversationId: conversationId)
-            async let groupsTask = CopareAPI.shared.listGroups()
-            let (messages, actions, groups) = try await (messagesTask, actionsTask, groupsTask)
-            if let group = groups.first(where: { $0.id == groupId }) {
-                memberDirectory = MemberDirectory(members: group.memberList)
-            }
+            let (messages, actions) = try await (messagesTask, actionsTask)
             timeline = mergeTimeline(messages: messages, actions: actions)
             await markTimelineSeen(messages: messages, actions: actions)
         } catch let error as CopareError {
             errorMessage = error.errorDescription
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshMembers() async {
+        do {
+            let members = try await CopareAPI.shared.listGroupMembers(groupId: groupId)
+            memberDirectory = MemberDirectory(members: members)
+        } catch {
+            // Keep the last known directory if the members request fails.
         }
     }
 
@@ -102,16 +102,29 @@ final class ChatViewModel {
         }
     }
 
-    func declineAction(_ action: ConversationAction, responseNote: String?) async {
+    func declineAction(_ action: ConversationAction, reason: String, alternativeStatement: String?) async {
         await resolveAction(actionId: action.id) {
             try await CopareAPI.shared.declineAction(
                 actionId: action.id,
-                responseNote: responseNote
+                reason: reason,
+                alternativeStatement: alternativeStatement
             )
         }
     }
 
-    func handleWebSocketEvent(_ event: WSEvent?) {
+    func confirmAlternative(_ action: ConversationAction) async {
+        await resolveAction(actionId: action.id) {
+            try await CopareAPI.shared.confirmAlternative(actionId: action.id)
+        }
+    }
+
+    func declineAlternative(_ action: ConversationAction) async {
+        await resolveAction(actionId: action.id) {
+            try await CopareAPI.shared.declineAlternative(actionId: action.id)
+        }
+    }
+
+    func handleWebSocketEvent(_ event: WSEvent?, currentUserId: String) {
         guard let event, event.conversationId == conversationId else { return }
 
         switch event.type {
@@ -280,24 +293,19 @@ struct ChatView: View {
     @Environment(AppState.self) private var appState
     let conversation: Conversation
     let currentUserRole: MemberRole?
-    let members: [GroupMember]
 
     @State private var viewModel: ChatViewModel
     @State private var showCreateAction = false
 
     init(
         conversation: Conversation,
-        currentUserRole: MemberRole? = nil,
-        members: [GroupMember] = []
+        currentUserRole: MemberRole? = nil
     ) {
         self.conversation = conversation
         self.currentUserRole = currentUserRole
-        self.members = members
         _viewModel = State(initialValue: ChatViewModel(
             conversationId: conversation.id,
-            groupId: conversation.groupId,
-            currentUserId: "",
-            members: members
+            groupId: conversation.groupId
         ))
     }
 
@@ -319,8 +327,14 @@ struct ChatView: View {
                 onConfirm: { action in
                     Task { await viewModel.confirmAction(action) }
                 },
-                onDecline: { action, note in
-                    Task { await viewModel.declineAction(action, responseNote: note) }
+                onDecline: { action, reason, alternative in
+                    Task { await viewModel.declineAction(action, reason: reason, alternativeStatement: alternative) }
+                },
+                onApproveAlternative: { action in
+                    Task { await viewModel.confirmAlternative(action) }
+                },
+                onDeclineAlternative: { action in
+                    Task { await viewModel.declineAlternative(action) }
                 }
             )
 
@@ -343,17 +357,16 @@ struct ChatView: View {
                 ProgressView()
             }
         }
-        .onAppear {
+        .task(id: currentUserId) {
+            guard !currentUserId.isEmpty else { return }
             viewModel = ChatViewModel(
                 conversationId: conversation.id,
-                groupId: conversation.groupId,
-                currentUserId: currentUserId,
-                members: members
+                groupId: conversation.groupId
             )
+            await viewModel.load()
         }
-        .task { await viewModel.load() }
         .onReceive(appState.webSocket.$lastEvent) { event in
-            viewModel.handleWebSocketEvent(event)
+            viewModel.handleWebSocketEvent(event, currentUserId: currentUserId)
         }
         .sheet(isPresented: $showCreateAction) {
             CreateConfirmationRequestView(
@@ -377,7 +390,9 @@ private struct ChatTimelineView: View {
     let memberDirectory: MemberDirectory
     let isSubmittingAction: Bool
     let onConfirm: (ConversationAction) -> Void
-    let onDecline: (ConversationAction, String?) -> Void
+    let onDecline: (ConversationAction, String, String?) -> Void
+    let onApproveAlternative: (ConversationAction) -> Void
+    let onDeclineAlternative: (ConversationAction) -> Void
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -390,7 +405,9 @@ private struct ChatTimelineView: View {
                             memberDirectory: memberDirectory,
                             isSubmittingAction: isSubmittingAction,
                             onConfirm: onConfirm,
-                            onDecline: onDecline
+                            onDecline: onDecline,
+                            onApproveAlternative: onApproveAlternative,
+                            onDeclineAlternative: onDeclineAlternative
                         )
                         .id(item.id)
                     }
@@ -413,7 +430,9 @@ private struct TimelineRowView: View {
     let memberDirectory: MemberDirectory
     let isSubmittingAction: Bool
     let onConfirm: (ConversationAction) -> Void
-    let onDecline: (ConversationAction, String?) -> Void
+    let onDecline: (ConversationAction, String, String?) -> Void
+    let onApproveAlternative: (ConversationAction) -> Void
+    let onDeclineAlternative: (ConversationAction) -> Void
 
     var body: some View {
         switch item {
@@ -431,7 +450,11 @@ private struct TimelineRowView: View {
                 memberDirectory: memberDirectory,
                 isSubmitting: isSubmittingAction,
                 onConfirm: { onConfirm(action) },
-                onDecline: { note in onDecline(action, note) }
+                onDecline: { reason, alternative in
+                    onDecline(action, reason, alternative)
+                },
+                onApproveAlternative: { onApproveAlternative(action) },
+                onDeclineAlternative: { onDeclineAlternative(action) }
             )
         }
     }
@@ -480,7 +503,9 @@ struct ConfirmationRequestCard: View {
     let memberDirectory: MemberDirectory
     let isSubmitting: Bool
     let onConfirm: () -> Void
-    let onDecline: (String?) -> Void
+    let onDecline: (String, String?) -> Void
+    let onApproveAlternative: () -> Void
+    let onDeclineAlternative: () -> Void
 
     @State private var showDeclineSheet = false
 
@@ -488,11 +513,16 @@ struct ConfirmationRequestCard: View {
         action.assignedTo == currentUserId
     }
 
+    private var isCreator: Bool {
+        action.createdBy == currentUserId
+    }
+
     private var statusColor: Color {
         switch action.status {
         case .pending: CopareTheme.amber
         case .confirmed: CopareTheme.sage
         case .declined: .red
+        case .alternativePending: CopareTheme.brand
         }
     }
 
@@ -517,13 +547,11 @@ struct ConfirmationRequestCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Text(action.statement)
-                    .font(.body)
-
-                if action.status == .declined, let note = action.responseNote, !note.isEmpty {
-                    Text("Decline note: \(note)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                if action.hasNegotiationHistory {
+                    ActionHistorySection(action: action)
+                } else {
+                    Text(action.statement)
+                        .font(.body)
                 }
 
                 if action.status == .pending, isAssignee {
@@ -544,16 +572,112 @@ struct ConfirmationRequestCard: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 }
 
+                if action.status == .alternativePending, isCreator {
+                    HStack(spacing: 12) {
+                        Button("Decline alternative") {
+                            onDeclineAlternative()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isSubmitting)
+
+                        Button("Approve alternative") {
+                            onApproveAlternative()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(CopareTheme.sage)
+                        .disabled(isSubmitting)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
                 Text(action.createdAt, style: .time)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .sheet(isPresented: $showDeclineSheet) {
-            DeclineConfirmationView(isSubmitting: isSubmitting) { note in
-                onDecline(note)
+            DeclineConfirmationView(isSubmitting: isSubmitting) { reason, alternative in
+                onDecline(reason, alternative)
                 showDeclineSheet = false
             }
+        }
+    }
+}
+
+private struct ActionHistorySection: View {
+    let action: ConversationAction
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ActionHistoryBlock(
+                title: "Original request",
+                text: action.statement
+            )
+
+            if let reason = action.responseNote.nilIfBlank {
+                ActionHistoryBlock(
+                    title: "Decline reason",
+                    text: reason,
+                    style: .secondary
+                )
+            }
+
+            if let alternative = action.alternativeStatement.nilIfBlank {
+                ActionHistoryBlock(
+                    title: "Proposed alternative",
+                    text: alternative
+                )
+            }
+
+            if let accepted = action.acceptedStatement.nilIfBlank {
+                ActionHistoryBlock(
+                    title: "Confirmed statement",
+                    text: accepted,
+                    style: .confirmed
+                )
+            } else if action.status == .declined, action.alternativeStatement.nilIfBlank != nil {
+                Text("Alternative declined")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+}
+
+private struct ActionHistoryBlock: View {
+    enum Style {
+        case normal
+        case secondary
+        case confirmed
+    }
+
+    let title: String
+    let text: String
+    var style: Style = .normal
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(labelColor)
+            Text(text)
+                .font(style == .secondary ? .footnote : .body)
+                .foregroundStyle(textColor)
+        }
+    }
+
+    private var labelColor: Color {
+        switch style {
+        case .confirmed: CopareTheme.sage
+        case .normal, .secondary: .secondary
+        }
+    }
+
+    private var textColor: Color {
+        switch style {
+        case .confirmed: .primary
+        case .normal: .primary
+        case .secondary: .secondary
         }
     }
 }
@@ -616,18 +740,35 @@ struct DeclineConfirmationView: View {
     @Environment(\.dismiss) private var dismiss
 
     let isSubmitting: Bool
-    let onDecline: (String?) -> Void
+    let onDecline: (String, String?) -> Void
 
-    @State private var note = ""
+    @State private var reason = ""
+    @State private var alternative = ""
+
+    private var trimmedReason: String {
+        reason.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedAlternative: String? {
+        let value = alternative.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Optional note", text: $note, axis: .vertical)
-                        .lineLimit(2...4)
+                    TextField("Reason for declining", text: $reason, axis: .vertical)
+                        .lineLimit(3...6)
                 } footer: {
-                    Text("Explain why you cannot confirm this statement.")
+                    Text("Explain why you cannot confirm this statement. A reason is required.")
+                }
+
+                Section {
+                    TextField("Alternative wording (optional)", text: $alternative, axis: .vertical)
+                        .lineLimit(3...8)
+                } footer: {
+                    Text("Suggest different wording you would be willing to confirm.")
                 }
             }
             .navigationTitle("Decline request")
@@ -638,14 +779,14 @@ struct DeclineConfirmationView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Decline") {
-                        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
-                        onDecline(trimmed.isEmpty ? nil : trimmed)
+                        onDecline(trimmedReason, trimmedAlternative)
                     }
-                    .disabled(isSubmitting)
+                    .disabled(isSubmitting || trimmedReason.isEmpty)
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 

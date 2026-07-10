@@ -12,7 +12,7 @@ import { getProfileDisplayName } from './display-names.js';
 const ACTION_SELECT = `
   SELECT ca.id, ca.conversation_id, ca.group_id,
          ca.action_type::text, ca.status::text,
-         ca.statement, ca.response_note,
+         ca.statement, ca.response_note, ca.alternative_statement, ca.accepted_statement,
          ca.created_by, ca.assigned_to, ca.resolved_by,
          ca.created_at, ca.resolved_at,
          MAX(${profileDisplayName('creator')}) AS created_by_display_name,
@@ -227,9 +227,20 @@ export async function declineAction(
   client: pg.PoolClient,
   actionId: string,
   userId: string,
-  responseNote?: string,
+  reason: string,
+  alternativeStatement?: string,
 ): Promise<unknown> {
-  return resolveAction(client, actionId, userId, 'declined', responseNote);
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) {
+    throw new HttpError(400, 'Decline reason is required');
+  }
+
+  const trimmedAlternative = alternativeStatement?.trim() || null;
+
+  return resolveAction(client, actionId, userId, 'declined', {
+    responseNote: trimmedReason,
+    alternativeStatement: trimmedAlternative,
+  });
 }
 
 async function resolveAction(
@@ -237,15 +248,16 @@ async function resolveAction(
   actionId: string,
   userId: string,
   status: 'confirmed' | 'declined',
-  responseNote?: string,
+  decline?: { responseNote: string; alternativeStatement: string | null },
 ): Promise<unknown> {
   const { rows: actionRows } = await client.query<{
     conversation_id: string;
     group_id: string;
+    created_by: string;
     assigned_to: string;
     status: string;
   }>(
-    `SELECT conversation_id, group_id, assigned_to, status::text
+    `SELECT conversation_id, group_id, created_by, assigned_to, status::text
      FROM conversation_actions WHERE id = $1 FOR UPDATE`,
     [actionId],
   );
@@ -261,16 +273,69 @@ async function resolveAction(
     throw new HttpError(400, 'This request has already been resolved');
   }
 
-  await client.query(
-    `UPDATE conversation_actions
-     SET status = $1, resolved_at = now(), resolved_by = $2, response_note = $3
-     WHERE id = $4`,
-    [status, userId, responseNote ?? null, actionId],
-  );
+  if (status === 'declined') {
+    if (!decline?.responseNote) {
+      throw new HttpError(400, 'Decline reason is required');
+    }
 
-  await logActionEvent(client, actionId, status, userId, {
-    responseNote: responseNote ?? null,
-  });
+    const hasAlternative = Boolean(decline.alternativeStatement);
+    const nextStatus = hasAlternative ? 'alternative_pending' : 'declined';
+
+    if (hasAlternative) {
+      await client.query(
+        `UPDATE conversation_actions
+         SET status = $1, response_note = $2, alternative_statement = $3,
+             resolved_by = NULL, resolved_at = NULL
+         WHERE id = $4`,
+        [nextStatus, decline.responseNote, decline.alternativeStatement, actionId],
+      );
+      await logActionEvent(client, actionId, 'alternative_proposed', userId, {
+        responseNote: decline.responseNote,
+        alternativeStatement: decline.alternativeStatement,
+      });
+      await client.query(
+        `UPDATE action_receipts SET read_at = NULL WHERE action_id = $1 AND user_id = $2`,
+        [actionId, existing.created_by],
+      );
+
+      const creatorDisplayName =
+        (await getProfileDisplayName(client, userId)) ?? 'Someone';
+      await client.query(
+        `INSERT INTO notification_outbox (user_id, payload) VALUES ($1, $2)`,
+        [
+          existing.created_by,
+          JSON.stringify({
+            type: 'action.new',
+            conversationId: existing.conversation_id,
+            actionId,
+            createdBy: userId,
+            createdByDisplayName: creatorDisplayName,
+            preview: decline.alternativeStatement!.slice(0, 120),
+          }),
+        ],
+      );
+    } else {
+      await client.query(
+        `UPDATE conversation_actions
+         SET status = $1, resolved_at = now(), resolved_by = $2,
+             response_note = $3, alternative_statement = NULL
+         WHERE id = $4`,
+        [nextStatus, userId, decline.responseNote, actionId],
+      );
+      await logActionEvent(client, actionId, status, userId, {
+        responseNote: decline.responseNote,
+      });
+    }
+  } else {
+    await client.query(
+      `UPDATE conversation_actions
+       SET status = $1, resolved_at = now(), resolved_by = $2,
+           response_note = NULL, alternative_statement = NULL
+       WHERE id = $3`,
+      [status, userId, actionId],
+    );
+    await logActionEvent(client, actionId, status, userId, {});
+  }
 
   // Resolver has seen the outcome; others must re-read the updated action.
   await client.query(
@@ -293,6 +358,131 @@ async function resolveAction(
   wsHub.sendToUsers(recipientIds, {
     type: 'action.updated',
     conversationId: existing.conversation_id,
+    action,
+  });
+
+  return action;
+}
+
+export async function confirmAlternative(
+  client: pg.PoolClient,
+  actionId: string,
+  userId: string,
+): Promise<unknown> {
+  const { rows: actionRows } = await client.query<{
+    conversation_id: string;
+    group_id: string;
+    created_by: string;
+    status: string;
+    alternative_statement: string | null;
+  }>(
+    `SELECT conversation_id, group_id, created_by, status::text, alternative_statement
+     FROM conversation_actions WHERE id = $1 FOR UPDATE`,
+    [actionId],
+  );
+  const existing = actionRows[0];
+  if (!existing) throw new HttpError(404, 'Action not found');
+
+  await assertGroupMember(client, existing.group_id, userId);
+
+  if (existing.created_by !== userId) {
+    throw new HttpError(403, 'Only the parent who requested confirmation can approve an alternative');
+  }
+  if (existing.status !== 'alternative_pending') {
+    throw new HttpError(400, 'This action is not awaiting alternative approval');
+  }
+  if (!existing.alternative_statement?.trim()) {
+    throw new HttpError(400, 'No alternative statement to approve');
+  }
+
+  await client.query(
+    `UPDATE conversation_actions
+     SET status = 'confirmed', accepted_statement = $1, resolved_at = now(), resolved_by = $2
+     WHERE id = $3`,
+    [existing.alternative_statement.trim(), userId, actionId],
+  );
+  await logActionEvent(client, actionId, 'alternative_confirmed', userId, {
+    acceptedStatement: existing.alternative_statement.trim(),
+  });
+
+  return broadcastActionUpdate(
+    client,
+    actionId,
+    existing.conversation_id,
+    existing.group_id,
+    userId,
+  );
+}
+
+export async function declineAlternative(
+  client: pg.PoolClient,
+  actionId: string,
+  userId: string,
+): Promise<unknown> {
+  const { rows: actionRows } = await client.query<{
+    conversation_id: string;
+    group_id: string;
+    created_by: string;
+    status: string;
+  }>(
+    `SELECT conversation_id, group_id, created_by, status::text
+     FROM conversation_actions WHERE id = $1 FOR UPDATE`,
+    [actionId],
+  );
+  const existing = actionRows[0];
+  if (!existing) throw new HttpError(404, 'Action not found');
+
+  await assertGroupMember(client, existing.group_id, userId);
+
+  if (existing.created_by !== userId) {
+    throw new HttpError(403, 'Only the parent who requested confirmation can decline an alternative');
+  }
+  if (existing.status !== 'alternative_pending') {
+    throw new HttpError(400, 'This action is not awaiting alternative approval');
+  }
+
+  await client.query(
+    `UPDATE conversation_actions
+     SET status = 'declined', resolved_at = now(), resolved_by = $1
+     WHERE id = $2`,
+    [userId, actionId],
+  );
+  await logActionEvent(client, actionId, 'alternative_declined', userId, {});
+
+  return broadcastActionUpdate(
+    client,
+    actionId,
+    existing.conversation_id,
+    existing.group_id,
+    userId,
+  );
+}
+
+async function broadcastActionUpdate(
+  client: pg.PoolClient,
+  actionId: string,
+  conversationId: string,
+  groupId: string,
+  actorUserId: string,
+): Promise<unknown> {
+  await client.query(
+    `UPDATE action_receipts
+     SET read_at = now(), delivered_at = COALESCE(delivered_at, now())
+     WHERE action_id = $1 AND user_id = $2`,
+    [actionId, actorUserId],
+  );
+  await client.query(
+    `UPDATE action_receipts SET read_at = NULL WHERE action_id = $1 AND user_id != $2`,
+    [actionId, actorUserId],
+  );
+
+  const action = await fetchActionById(client, actionId);
+  const memberIds = await getGroupMemberIds(client, groupId);
+  const recipientIds = memberIds.filter((id) => id !== actorUserId);
+
+  wsHub.sendToUsers(recipientIds, {
+    type: 'action.updated',
+    conversationId,
     action,
   });
 

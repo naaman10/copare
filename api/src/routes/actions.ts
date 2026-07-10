@@ -4,8 +4,10 @@ import { getPool, withTransaction } from '../db/pool.js';
 import type { AuthVariables } from '../middleware/auth.js';
 import {
   confirmAction,
+  confirmAlternative,
   createConfirmationRequest,
   declineAction,
+  declineAlternative,
   listConversationActions,
   markActionDelivered,
 } from '../services/actions.js';
@@ -70,13 +72,50 @@ actionsRoutes.post('/actions/:actionId/decline', async (c) => {
   const actionId = c.req.param('actionId');
   const body = z
     .object({
-      responseNote: z.string().max(500).optional(),
+      reason: z.string().min(1).max(500),
+      alternativeStatement: z.string().max(2000).optional(),
     })
-    .parse(await c.req.json().catch(() => ({})));
+    .parse(await c.req.json());
 
   try {
     const action = await withTransaction((client) =>
-      declineAction(client, actionId, userId, body.responseNote),
+      declineAction(
+        client,
+        actionId,
+        userId,
+        body.reason,
+        body.alternativeStatement,
+      ),
+    );
+    return c.json({ action });
+  } catch (err) {
+    if (err instanceof HttpError) return jsonError(c, err);
+    throw err;
+  }
+});
+
+actionsRoutes.post('/actions/:actionId/alternative/confirm', async (c) => {
+  const userId = c.get('userId');
+  const actionId = c.req.param('actionId');
+
+  try {
+    const action = await withTransaction((client) =>
+      confirmAlternative(client, actionId, userId),
+    );
+    return c.json({ action });
+  } catch (err) {
+    if (err instanceof HttpError) return jsonError(c, err);
+    throw err;
+  }
+});
+
+actionsRoutes.post('/actions/:actionId/alternative/decline', async (c) => {
+  const userId = c.get('userId');
+  const actionId = c.req.param('actionId');
+
+  try {
+    const action = await withTransaction((client) =>
+      declineAlternative(client, actionId, userId),
     );
     return c.json({ action });
   } catch (err) {

@@ -56,8 +56,7 @@ struct GroupDetailView: View {
                     NavigationLink {
                         ConversationsListView(
                             groupId: group.id,
-                            currentUserRole: currentUserRole,
-                            members: group.memberList
+                            currentUserRole: currentUserRole
                         )
                     } label: {
                         CopareCard {

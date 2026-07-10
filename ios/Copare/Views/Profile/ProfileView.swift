@@ -14,7 +14,7 @@ struct ProfileView: View {
                         CopareCard {
                             VStack(alignment: .leading, spacing: 12) {
                                 CopareSectionHeader(title: "Account")
-                                LabeledContent("Name", value: profileDisplayName ?? user.name ?? "—")
+                                LabeledContent("Display name", value: profileDisplayName ?? "—")
                                 LabeledContent("Email", value: user.email)
                             }
                         }
@@ -67,7 +67,8 @@ struct ProfileView: View {
             .navigationBarTitleDisplayMode(.large)
             .task {
                 await loadProfileDisplayName()
-                if acceptDisplayName.isEmpty, let name = appState.session?.user.name?.nilIfBlank {
+                if acceptDisplayName.isEmpty,
+                   let name = appState.session?.user.name.nilIfBlank {
                     acceptDisplayName = name
                 }
             }

@@ -30,6 +30,11 @@ actor CopareAPI {
         return response.groups
     }
 
+    func listGroupMembers(groupId: String) async throws -> [GroupMember] {
+        let response: GroupMembersResponse = try await get("groups/\(groupId)/members")
+        return response.members
+    }
+
     func createGroup(displayName: String) async throws -> CopareGroup {
         let response: CreateGroupResponse = try await post("groups", body: ["displayName": displayName])
         return response.group
@@ -153,12 +158,22 @@ actor CopareAPI {
         return response.action
     }
 
-    func declineAction(actionId: String, responseNote: String?) async throws -> ConversationAction {
-        var body: [String: String] = [:]
-        if let responseNote, !responseNote.isEmpty {
-            body["responseNote"] = responseNote
+    func declineAction(actionId: String, reason: String, alternativeStatement: String?) async throws -> ConversationAction {
+        var body: [String: String] = ["reason": reason]
+        if let alternativeStatement, !alternativeStatement.isEmpty {
+            body["alternativeStatement"] = alternativeStatement
         }
         let response: ActionResponse = try await post("actions/\(actionId)/decline", body: body)
+        return response.action
+    }
+
+    func confirmAlternative(actionId: String) async throws -> ConversationAction {
+        let response: ActionResponse = try await post("actions/\(actionId)/alternative/confirm", body: [:])
+        return response.action
+    }
+
+    func declineAlternative(actionId: String) async throws -> ConversationAction {
+        let response: ActionResponse = try await post("actions/\(actionId)/alternative/decline", body: [:])
         return response.action
     }
 
@@ -243,6 +258,10 @@ actor CopareAPI {
 
 private struct GroupsResponse: Decodable {
     let groups: [CopareGroup]
+}
+
+private struct GroupMembersResponse: Decodable {
+    let members: [GroupMember]
 }
 
 private struct CreateGroupResponse: Decodable {

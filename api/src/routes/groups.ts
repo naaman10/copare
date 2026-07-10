@@ -8,6 +8,7 @@ import {
   createInvitation,
 } from '../services/groups.js';
 import { ensureProfileFromAuth, upsertProfile } from '../services/profiles.js';
+import { listGroupMembers } from '../services/members.js';
 import { profileDisplayName } from '../lib/display-names.js';
 import { HttpError, jsonError } from '../lib/errors.js';
 
@@ -47,6 +48,21 @@ groupsRoutes.get('/', async (c) => {
     [userId],
   );
   return c.json({ groups: rows });
+});
+
+groupsRoutes.get('/:groupId/members', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('groupId');
+
+  try {
+    const members = await withTransaction((client) =>
+      listGroupMembers(client, groupId, userId),
+    );
+    return c.json({ members });
+  } catch (err) {
+    if (err instanceof HttpError) return jsonError(c, err);
+    throw err;
+  }
 });
 
 groupsRoutes.post('/:groupId/invitations', async (c) => {
