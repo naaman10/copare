@@ -134,7 +134,10 @@ struct GroupsListView: View {
                                                 )
                                             }
                                         } label: {
-                                            RecentConversationRow(recent: recent)
+                                            RecentConversationRow(
+                                                recent: recent,
+                                                currentUserId: currentUserId
+                                            )
                                         }
                                         .buttonStyle(.plain)
                                     }
@@ -282,6 +285,7 @@ struct OutstandingActionRow: View {
 
 struct RecentConversationRow: View {
     let recent: RecentConversation
+    let currentUserId: String
 
     var body: some View {
         CopareCard {
@@ -302,7 +306,10 @@ struct RecentConversationRow: View {
                     }
 
                     if let preview = recent.lastMessagePreview.nilIfBlank {
-                        lastMessageLine(senderName: recent.lastMessageSenderDisplayName, preview: preview)
+                        lastMessageLine(
+                            senderLabel: senderLabel,
+                            preview: preview
+                        )
                     }
                 }
 
@@ -313,12 +320,17 @@ struct RecentConversationRow: View {
         }
     }
 
+    private var senderLabel: String? {
+        if recent.lastMessageSenderId == currentUserId {
+            return "You:"
+        }
+        return recent.lastMessageSenderDisplayName.nilIfBlank
+    }
+
     @ViewBuilder
-    private func lastMessageLine(senderName: String?, preview: String) -> some View {
-        if let senderName = senderName.nilIfBlank {
-            (Text(senderName).fontWeight(.semibold) + Text(" \(preview)"))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+    private func lastMessageLine(senderLabel: String?, preview: String) -> some View {
+        if let senderLabel {
+            Text(lastMessageAttributedString(senderLabel: senderLabel, preview: preview))
                 .lineLimit(2)
         } else {
             Text(preview)
@@ -326,6 +338,19 @@ struct RecentConversationRow: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
         }
+    }
+
+    private func lastMessageAttributedString(senderLabel: String, preview: String) -> AttributedString {
+        var line = AttributedString(senderLabel)
+        line.font = .subheadline.weight(.semibold)
+        line.foregroundColor = .secondary
+
+        var message = AttributedString(" \(preview)")
+        message.font = .subheadline
+        message.foregroundColor = .secondary
+
+        line.append(message)
+        return line
     }
 
     private static func formatLastMessageTime(_ date: Date) -> String {

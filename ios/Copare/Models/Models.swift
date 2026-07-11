@@ -183,6 +183,7 @@ struct RecentConversation: Codable, Identifiable, Sendable {
     let title: String
     let createdBy: String
     let lastMessageAt: Date?
+    let lastMessageSenderId: String?
     let lastMessageSenderDisplayName: String?
     let lastMessagePreview: String?
     let createdAt: Date
