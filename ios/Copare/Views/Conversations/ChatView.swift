@@ -683,6 +683,7 @@ struct ConfirmationRequestCard: View {
         case .confirmed: CopareTheme.sage
         case .declined: .red
         case .alternativePending: CopareTheme.brand
+        case .mediationInProgress, .parentApprovalPending: CopareTheme.brand
         }
     }
 

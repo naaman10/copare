@@ -3,9 +3,21 @@ import { z } from 'zod';
 import { getPool, withTransaction } from '../db/pool.js';
 import type { AuthVariables } from '../middleware/auth.js';
 import { assertGroupMember } from '../services/groups.js';
+import { listRecentConversations } from '../services/conversations.js';
 import { HttpError, jsonError } from '../lib/errors.js';
 
 export const conversationsRoutes = new Hono<{ Variables: AuthVariables }>();
+
+conversationsRoutes.get('/conversations/recent', async (c) => {
+  const userId = c.get('userId');
+  const limit = Math.min(Number(c.req.query('limit') ?? 20), 50);
+
+  const conversations = await withTransaction((client) =>
+    listRecentConversations(client, userId, limit),
+  );
+
+  return c.json({ conversations });
+});
 
 conversationsRoutes.get('/groups/:groupId/conversations', async (c) => {
   const userId = c.get('userId');

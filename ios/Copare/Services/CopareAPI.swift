@@ -62,6 +62,22 @@ actor CopareAPI {
         return response.conversations
     }
 
+    func listRecentConversations(limit: Int = 20) async throws -> [RecentConversation] {
+        let response: RecentConversationsResponse = try await get(
+            "conversations/recent",
+            query: [URLQueryItem(name: "limit", value: String(limit))]
+        )
+        return response.conversations
+    }
+
+    func listOutstandingActions(limit: Int = 20) async throws -> [OutstandingAction] {
+        let response: OutstandingActionsResponse = try await get(
+            "actions/outstanding",
+            query: [URLQueryItem(name: "limit", value: String(limit))]
+        )
+        return response.actions
+    }
+
     func createConversation(groupId: String, title: String) async throws -> Conversation {
         let response: CreateConversationResponse = try await post(
             "groups/\(groupId)/conversations",
@@ -338,6 +354,14 @@ struct AcceptInvitationResponse: Decodable, Sendable {
 
 private struct ConversationsResponse: Decodable {
     let conversations: [Conversation]
+}
+
+private struct RecentConversationsResponse: Decodable {
+    let conversations: [RecentConversation]
+}
+
+private struct OutstandingActionsResponse: Decodable {
+    let actions: [OutstandingAction]
 }
 
 private struct CreateConversationResponse: Decodable {

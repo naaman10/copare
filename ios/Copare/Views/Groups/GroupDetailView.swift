@@ -233,12 +233,6 @@ private struct MemberSlotRow: View {
     }
 }
 
-private extension MemberRole {
-    var isMediator: Bool {
-        self == .mediatorA || self == .mediatorB
-    }
-}
-
 // MARK: - Invite sheet
 
 struct InviteMemberView: View {

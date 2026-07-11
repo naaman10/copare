@@ -177,6 +177,49 @@ struct Conversation: Codable, Identifiable, Sendable {
     let createdAt: Date
 }
 
+struct RecentConversation: Codable, Identifiable, Sendable {
+    let id: String
+    let groupId: String
+    let title: String
+    let createdBy: String
+    let lastMessageAt: Date?
+    let createdAt: Date
+    let unreadCount: Int
+    let lastMessagePreview: String?
+
+    var conversation: Conversation {
+        Conversation(
+            id: id,
+            groupId: groupId,
+            title: title,
+            createdBy: createdBy,
+            lastMessageAt: lastMessageAt,
+            createdAt: createdAt
+        )
+    }
+
+    var hasUnread: Bool { unreadCount > 0 }
+}
+
+struct OutstandingAction: Codable, Identifiable, Sendable {
+    let action: ConversationAction
+    let conversationTitle: String
+    let nextStep: String
+
+    var id: String { action.id }
+
+    var conversation: Conversation {
+        Conversation(
+            id: action.conversationId,
+            groupId: action.groupId,
+            title: conversationTitle,
+            createdBy: action.createdBy,
+            lastMessageAt: nil,
+            createdAt: action.createdAt
+        )
+    }
+}
+
 struct MessageReceipt: Codable, Sendable {
     let userId: String
     let displayName: String?

@@ -159,6 +159,83 @@ export async function listConversationActions(
   return rows;
 }
 
+export async function listOutstandingActions(
+  client: pg.PoolClient,
+  userId: string,
+  limit = 20,
+): Promise<unknown[]> {
+  const select = ACTION_SELECT.replace(
+    ') AS receipts\n  FROM conversation_actions ca',
+    `) AS receipts,
+         MAX(conv.title) AS conversation_title,
+         CASE
+           WHEN ca.status = 'pending' AND ca.assigned_to = $1
+                AND ca.action_type = 'confirmation_request'
+             THEN 'Confirm or decline'
+           WHEN ca.status = 'pending' AND ca.assigned_to = $1
+                AND ca.action_type = 'mediation_request'
+             THEN 'Respond to mediation topic'
+           WHEN ca.status = 'alternative_pending' AND ca.created_by = $1
+             THEN 'Approve or decline alternative'
+           WHEN ca.status = 'mediation_in_progress'
+                AND MAX(gm.role::text) IN ('mediator_a', 'mediator_b')
+             THEN 'Mediate and propose resolution'
+           WHEN ca.status = 'parent_approval_pending'
+                AND MAX(gm.role::text) = 'parent_a'
+                AND ca.parent_a_approved_at IS NULL
+             THEN 'Approve or decline resolution'
+           WHEN ca.status = 'parent_approval_pending'
+                AND MAX(gm.role::text) = 'parent_b'
+                AND ca.parent_b_approved_at IS NULL
+             THEN 'Approve or decline resolution'
+           ELSE 'Action required'
+         END AS next_step
+  FROM conversation_actions ca`,
+  );
+
+  const { rows } = await client.query<Record<string, unknown>>(
+    `${select}
+     JOIN conversations conv ON conv.id = ca.conversation_id
+     JOIN groups g ON g.id = ca.group_id
+     JOIN group_members gm ON gm.group_id = ca.group_id AND gm.user_id = $1
+     WHERE g.status = 'active'
+       AND (
+         (ca.status = 'pending' AND ca.assigned_to = $1)
+         OR (ca.status = 'alternative_pending' AND ca.created_by = $1)
+         OR (
+           ca.action_type = 'mediation_request'
+           AND ca.status = 'mediation_in_progress'
+           AND gm.role IN ('mediator_a', 'mediator_b')
+         )
+         OR (
+           ca.action_type = 'mediation_request'
+           AND ca.status = 'parent_approval_pending'
+           AND (
+             (gm.role = 'parent_a' AND ca.parent_a_approved_at IS NULL)
+             OR (gm.role = 'parent_b' AND ca.parent_b_approved_at IS NULL)
+           )
+         )
+       )
+     GROUP BY ca.id
+     ORDER BY ca.created_at DESC
+     LIMIT $2`,
+    [userId, limit],
+  );
+
+  return rows.map((row) => {
+    const {
+      conversation_title: conversationTitle,
+      next_step: nextStep,
+      ...action
+    } = row;
+    return {
+      action,
+      conversationTitle,
+      nextStep,
+    };
+  });
+}
+
 export async function createConfirmationRequest(
   client: pg.PoolClient,
   conversationId: string,

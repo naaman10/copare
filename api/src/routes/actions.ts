@@ -13,6 +13,7 @@ import {
   declineMediationResolution,
   listConversationActions,
   listMediationMessages,
+  listOutstandingActions,
   markActionDelivered,
   resolveMediation,
   respondToMediation,
@@ -22,6 +23,21 @@ import { HttpError, jsonError } from '../lib/errors.js';
 import { wsHub } from '../ws/hub.js';
 
 export const actionsRoutes = new Hono<{ Variables: AuthVariables }>();
+
+actionsRoutes.get('/actions/outstanding', async (c) => {
+  const userId = c.get('userId');
+  const limit = Math.min(Number(c.req.query('limit') ?? 20), 50);
+
+  try {
+    const actions = await withTransaction((client) =>
+      listOutstandingActions(client, userId, limit),
+    );
+    return c.json({ actions });
+  } catch (err) {
+    if (err instanceof HttpError) return jsonError(c, err);
+    throw err;
+  }
+});
 
 actionsRoutes.get('/conversations/:conversationId/actions', async (c) => {
   const userId = c.get('userId');
