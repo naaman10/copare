@@ -96,7 +96,7 @@ struct GroupsListView: View {
                                 LazyVStack(spacing: 12) {
                                     ForEach(viewModel.outstandingActions) { outstanding in
                                         NavigationLink {
-                                            if let group = viewModel.group(for: outstanding.action.groupId) {
+                                            if viewModel.group(for: outstanding.action.groupId) != nil {
                                                 ChatView(
                                                     conversation: outstanding.conversation,
                                                     currentUserRole: viewModel.role(
@@ -124,7 +124,7 @@ struct GroupsListView: View {
                                 LazyVStack(spacing: 12) {
                                     ForEach(viewModel.recentConversations) { recent in
                                         NavigationLink {
-                                            if let group = viewModel.group(for: recent.groupId) {
+                                            if viewModel.group(for: recent.groupId) != nil {
                                                 ChatView(
                                                     conversation: recent.conversation,
                                                     currentUserRole: viewModel.role(
@@ -287,31 +287,47 @@ struct RecentConversationRow: View {
         CopareCard {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(recent.title)
-                        .font(.headline)
-                        .foregroundStyle(CopareTheme.textPrimary)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(recent.title)
+                            .font(.headline)
+                            .foregroundStyle(CopareTheme.textPrimary)
 
-                    if let preview = recent.lastMessagePreview.nilIfBlank {
-                        Text(preview)
+                        Spacer(minLength: 8)
+
+                        if let lastMessageAt = recent.lastMessageAt {
+                            Text(Self.formatLastMessageTime(lastMessageAt))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let senderName = recent.lastMessageSenderDisplayName.nilIfBlank {
+                        Text(senderName)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    if let lastMessageAt = recent.lastMessageAt {
-                        Text(lastMessageAt, style: .relative)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
-
-                Spacer(minLength: 8)
 
                 if recent.hasUnread {
                     UnreadBadge(count: recent.unreadCount)
                 }
             }
         }
+    }
+
+    private static func formatLastMessageTime(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        if calendar.isDateInYesterday(date) {
+            return "Yesterday"
+        }
+        if let days = calendar.dateComponents([.day], from: date, to: Date()).day, days < 7 {
+            return date.formatted(.dateTime.weekday(.abbreviated))
+        }
+        return date.formatted(date: .numeric, time: .omitted)
     }
 }
 
