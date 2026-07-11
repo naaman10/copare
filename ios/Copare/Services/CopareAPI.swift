@@ -177,6 +177,65 @@ actor CopareAPI {
         return response.action
     }
 
+    func createMediationRequest(
+        conversationId: String,
+        topic: String
+    ) async throws -> ConversationAction {
+        let response: ActionResponse = try await post(
+            "conversations/\(conversationId)/actions",
+            body: [
+                "actionType": ConversationActionType.mediationRequest.rawValue,
+                "topic": topic,
+            ]
+        )
+        return response.action
+    }
+
+    func respondToMediation(actionId: String, response: String) async throws -> ConversationAction {
+        let apiResponse: ActionResponse = try await post(
+            "actions/\(actionId)/mediation/respond",
+            body: ["response": response]
+        )
+        return apiResponse.action
+    }
+
+    func listMediationMessages(actionId: String) async throws -> [Message] {
+        let response: MessagesResponse = try await get("actions/\(actionId)/mediation/messages")
+        return response.messages
+    }
+
+    func sendMediationMessage(actionId: String, body: String, clientId: UUID) async throws -> Message {
+        let response: SendMessageResponse = try await post(
+            "actions/\(actionId)/mediation/messages",
+            body: [
+                "body": body,
+                "clientId": clientId.uuidString,
+            ]
+        )
+        return response.message
+    }
+
+    func resolveMediation(actionId: String, resolution: String) async throws -> ConversationAction {
+        let response: ActionResponse = try await post(
+            "actions/\(actionId)/mediation/resolve",
+            body: ["resolution": resolution]
+        )
+        return response.action
+    }
+
+    func approveMediationResolution(actionId: String) async throws -> ConversationAction {
+        let response: ActionResponse = try await post("actions/\(actionId)/mediation/approve", body: [:])
+        return response.action
+    }
+
+    func declineMediationResolution(actionId: String, reason: String) async throws -> ConversationAction {
+        let response: ActionResponse = try await post(
+            "actions/\(actionId)/mediation/decline",
+            body: ["reason": reason]
+        )
+        return response.action
+    }
+
     // MARK: - HTTP helpers
 
     private func get<T: Decodable>(

@@ -10,6 +10,7 @@ final class ChatViewModel {
     var isSending = false
     var isSubmittingAction = false
     var errorMessage: String?
+    var mediationRefreshToken = 0
 
     private let conversationId: String
     private let groupId: String
@@ -124,13 +125,94 @@ final class ChatViewModel {
         }
     }
 
+    func createMediationRequest(topic: String) async -> Bool {
+        let text = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+
+        isSubmittingAction = true
+        errorMessage = nil
+        defer { isSubmittingAction = false }
+
+        do {
+            let action = try await CopareAPI.shared.createMediationRequest(
+                conversationId: conversationId,
+                topic: text
+            )
+            appendActionIfNeeded(action)
+            return true
+        } catch let error as CopareError {
+            errorMessage = error.errorDescription
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func respondToMediation(_ action: ConversationAction, response: String) async {
+        await resolveAction(actionId: action.id) {
+            try await CopareAPI.shared.respondToMediation(actionId: action.id, response: response)
+        }
+    }
+
+    func resolveMediation(_ action: ConversationAction, resolution: String) async {
+        await resolveAction(actionId: action.id) {
+            try await CopareAPI.shared.resolveMediation(actionId: action.id, resolution: resolution)
+        }
+    }
+
+    func approveMediationResolution(_ action: ConversationAction) async {
+        await resolveAction(actionId: action.id) {
+            try await CopareAPI.shared.approveMediationResolution(actionId: action.id)
+        }
+    }
+
+    func declineMediationResolution(_ action: ConversationAction, reason: String) async {
+        await resolveAction(actionId: action.id) {
+            try await CopareAPI.shared.declineMediationResolution(actionId: action.id, reason: reason)
+        }
+    }
+
+    func sendMediationMessage(actionId: String, body: String) async -> Message? {
+        let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        do {
+            return try await CopareAPI.shared.sendMediationMessage(
+                actionId: actionId,
+                body: text,
+                clientId: UUID()
+            )
+        } catch let error as CopareError {
+            errorMessage = error.errorDescription
+            return nil
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func loadMediationMessages(actionId: String) async -> [Message] {
+        do {
+            return try await CopareAPI.shared.listMediationMessages(actionId: actionId)
+        } catch {
+            return []
+        }
+    }
+
     func handleWebSocketEvent(_ event: WSEvent?, currentUserId: String) {
         guard let event, event.conversationId == conversationId else { return }
 
         switch event.type {
         case "message.new":
-            guard let message = event.message,
-                  message.senderId != currentUserId else {
+            guard let message = event.message else { return }
+            if message.rootId != nil {
+                if message.senderId != currentUserId {
+                    mediationRefreshToken += 1
+                }
+                return
+            }
+            guard message.senderId != currentUserId else {
                 return
             }
             appendMessageIfNeeded(message)
@@ -157,6 +239,9 @@ final class ChatViewModel {
         case "action.updated":
             guard let action = event.action else { return }
             updateAction(action)
+            if action.status == .alternativePending || action.status == .parentApprovalPending {
+                Task { await refreshAction(action.id) }
+            }
             if action.createdBy != currentUserId && action.resolvedBy != currentUserId {
                 Task {
                     try? await CopareAPI.shared.markActionDelivered(actionId: action.id)
@@ -276,6 +361,16 @@ final class ChatViewModel {
         }
     }
 
+    private func refreshAction(_ actionId: String) async {
+        do {
+            let actions = try await CopareAPI.shared.listActions(conversationId: conversationId)
+            guard let fresh = actions.first(where: { $0.id == actionId }) else { return }
+            updateAction(fresh)
+        } catch {
+            // Keep the WebSocket payload if the refresh fails.
+        }
+    }
+
     private func markTimelineSeen(
         messages: [Message],
         actions: [ConversationAction]
@@ -295,7 +390,7 @@ struct ChatView: View {
     let currentUserRole: MemberRole?
 
     @State private var viewModel: ChatViewModel
-    @State private var showCreateAction = false
+    @State private var showActionsMenu = false
 
     init(
         conversation: Conversation,
@@ -322,6 +417,7 @@ struct ChatView: View {
             ChatTimelineView(
                 timeline: viewModel.timeline,
                 currentUserId: currentUserId,
+                currentUserRole: currentUserRole,
                 memberDirectory: viewModel.memberDirectory,
                 isSubmittingAction: viewModel.isSubmittingAction,
                 onConfirm: { action in
@@ -335,7 +431,26 @@ struct ChatView: View {
                 },
                 onDeclineAlternative: { action in
                     Task { await viewModel.declineAlternative(action) }
-                }
+                },
+                onRespondToMediation: { action, response in
+                    Task { await viewModel.respondToMediation(action, response: response) }
+                },
+                onResolveMediation: { action, resolution in
+                    Task { await viewModel.resolveMediation(action, resolution: resolution) }
+                },
+                onApproveMediationResolution: { action in
+                    Task { await viewModel.approveMediationResolution(action) }
+                },
+                onDeclineMediationResolution: { action, reason in
+                    Task { await viewModel.declineMediationResolution(action, reason: reason) }
+                },
+                onLoadMediationMessages: { actionId in
+                    await viewModel.loadMediationMessages(actionId: actionId)
+                },
+                onSendMediationMessage: { actionId, body in
+                    await viewModel.sendMediationMessage(actionId: actionId, body: body)
+                },
+                mediationRefreshToken: viewModel.mediationRefreshToken
             )
 
             Divider()
@@ -345,7 +460,7 @@ struct ChatView: View {
                 canCreateActions: canCreateActions,
                 isSending: viewModel.isSending,
                 isSubmittingAction: viewModel.isSubmittingAction,
-                onCreateAction: { showCreateAction = true },
+                onCreateAction: { showActionsMenu = true },
                 onSend: { Task { await viewModel.send() } }
             )
         }
@@ -368,11 +483,14 @@ struct ChatView: View {
         .onReceive(appState.webSocket.$lastEvent) { event in
             viewModel.handleWebSocketEvent(event, currentUserId: currentUserId)
         }
-        .sheet(isPresented: $showCreateAction) {
-            CreateConfirmationRequestView(
+        .sheet(isPresented: $showActionsMenu) {
+            ChatActionsFlowView(
                 isSubmitting: viewModel.isSubmittingAction,
-                onSubmit: { statement in
+                onCreateConfirmation: { statement in
                     await viewModel.createConfirmationRequest(statement: statement)
+                },
+                onCreateMediation: { topic in
+                    await viewModel.createMediationRequest(topic: topic)
                 }
             )
         }
@@ -387,12 +505,20 @@ struct ChatView: View {
 private struct ChatTimelineView: View {
     let timeline: [TimelineItem]
     let currentUserId: String
+    let currentUserRole: MemberRole?
     let memberDirectory: MemberDirectory
     let isSubmittingAction: Bool
     let onConfirm: (ConversationAction) -> Void
     let onDecline: (ConversationAction, String, String?) -> Void
     let onApproveAlternative: (ConversationAction) -> Void
     let onDeclineAlternative: (ConversationAction) -> Void
+    let onRespondToMediation: (ConversationAction, String) -> Void
+    let onResolveMediation: (ConversationAction, String) -> Void
+    let onApproveMediationResolution: (ConversationAction) -> Void
+    let onDeclineMediationResolution: (ConversationAction, String) -> Void
+    let onLoadMediationMessages: (String) async -> [Message]
+    let onSendMediationMessage: (String, String) async -> Message?
+    let mediationRefreshToken: Int
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -402,12 +528,20 @@ private struct ChatTimelineView: View {
                         TimelineRowView(
                             item: item,
                             currentUserId: currentUserId,
+                            currentUserRole: currentUserRole,
                             memberDirectory: memberDirectory,
                             isSubmittingAction: isSubmittingAction,
                             onConfirm: onConfirm,
                             onDecline: onDecline,
                             onApproveAlternative: onApproveAlternative,
-                            onDeclineAlternative: onDeclineAlternative
+                            onDeclineAlternative: onDeclineAlternative,
+                            onRespondToMediation: onRespondToMediation,
+                            onResolveMediation: onResolveMediation,
+                            onApproveMediationResolution: onApproveMediationResolution,
+                            onDeclineMediationResolution: onDeclineMediationResolution,
+                            onLoadMediationMessages: onLoadMediationMessages,
+                            onSendMediationMessage: onSendMediationMessage,
+                            mediationRefreshToken: mediationRefreshToken
                         )
                         .id(item.id)
                     }
@@ -427,12 +561,20 @@ private struct ChatTimelineView: View {
 private struct TimelineRowView: View {
     let item: TimelineItem
     let currentUserId: String
+    let currentUserRole: MemberRole?
     let memberDirectory: MemberDirectory
     let isSubmittingAction: Bool
     let onConfirm: (ConversationAction) -> Void
     let onDecline: (ConversationAction, String, String?) -> Void
     let onApproveAlternative: (ConversationAction) -> Void
     let onDeclineAlternative: (ConversationAction) -> Void
+    let onRespondToMediation: (ConversationAction, String) -> Void
+    let onResolveMediation: (ConversationAction, String) -> Void
+    let onApproveMediationResolution: (ConversationAction) -> Void
+    let onDeclineMediationResolution: (ConversationAction, String) -> Void
+    let onLoadMediationMessages: (String) async -> [Message]
+    let onSendMediationMessage: (String, String) async -> Message?
+    let mediationRefreshToken: Int
 
     var body: some View {
         switch item {
@@ -444,18 +586,36 @@ private struct TimelineRowView: View {
                 memberDirectory: memberDirectory
             )
         case .action(let action):
-            ConfirmationRequestCard(
-                action: action,
-                currentUserId: currentUserId,
-                memberDirectory: memberDirectory,
-                isSubmitting: isSubmittingAction,
-                onConfirm: { onConfirm(action) },
-                onDecline: { reason, alternative in
-                    onDecline(action, reason, alternative)
-                },
-                onApproveAlternative: { onApproveAlternative(action) },
-                onDeclineAlternative: { onDeclineAlternative(action) }
-            )
+            switch action.actionType {
+            case .confirmationRequest:
+                ConfirmationRequestCard(
+                    action: action,
+                    currentUserId: currentUserId,
+                    memberDirectory: memberDirectory,
+                    isSubmitting: isSubmittingAction,
+                    onConfirm: { onConfirm(action) },
+                    onDecline: { reason, alternative in
+                        onDecline(action, reason, alternative)
+                    },
+                    onApproveAlternative: { onApproveAlternative(action) },
+                    onDeclineAlternative: { onDeclineAlternative(action) }
+                )
+            case .mediationRequest:
+                MediationRequestCard(
+                    action: action,
+                    currentUserId: currentUserId,
+                    currentUserRole: currentUserRole,
+                    memberDirectory: memberDirectory,
+                    isSubmitting: isSubmittingAction,
+                    onLoadMessages: { await onLoadMediationMessages(action.id) },
+                    onSendMessage: { body in await onSendMediationMessage(action.id, body) },
+                    onRespond: { response in onRespondToMediation(action, response) },
+                    onResolve: { resolution in onResolveMediation(action, resolution) },
+                    onApproveResolution: { onApproveMediationResolution(action) },
+                    onDeclineResolution: { reason in onDeclineMediationResolution(action, reason) },
+                    mediationRefreshToken: mediationRefreshToken
+                )
+            }
         }
     }
 }
@@ -547,11 +707,17 @@ struct ConfirmationRequestCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if action.hasNegotiationHistory {
+                if action.hasNegotiationHistory || action.status == .alternativePending {
                     ActionHistorySection(action: action)
                 } else {
                     Text(action.statement)
                         .font(.body)
+                }
+
+                if action.status == .alternativePending, isCreator {
+                    Text("Your co-parent proposed an alternative. Review it above and approve or decline.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 if action.status == .pending, isAssignee {
@@ -682,57 +848,583 @@ private struct ActionHistoryBlock: View {
     }
 }
 
-struct CreateConfirmationRequestView: View {
+struct MediationRequestCard: View {
+    let action: ConversationAction
+    let currentUserId: String
+    let currentUserRole: MemberRole?
+    let memberDirectory: MemberDirectory
+    let isSubmitting: Bool
+    let onLoadMessages: () async -> [Message]
+    let onSendMessage: (String) async -> Message?
+    let onRespond: (String) -> Void
+    let onResolve: (String) -> Void
+    let onApproveResolution: () -> Void
+    let onDeclineResolution: (String) -> Void
+    let mediationRefreshToken: Int
+
+    @State private var showRespondSheet = false
+    @State private var showResolveSheet = false
+    @State private var showDeclineResolutionSheet = false
+    @State private var mediationMessages: [Message] = []
+    @State private var mediatorDraft = ""
+    @State private var isSendingMediatorMessage = false
+
+    private var isAssignee: Bool { action.assignedTo == currentUserId }
+    private var isMediator: Bool { currentUserRole?.isMediator == true }
+    private var isParent: Bool { currentUserRole?.isParent == true }
+
+    private var statusColor: Color {
+        switch action.status {
+        case .pending: CopareTheme.amber
+        case .mediationInProgress: CopareTheme.brand
+        case .parentApprovalPending: CopareTheme.amber
+        case .confirmed: CopareTheme.sage
+        case .declined: .red
+        default: CopareTheme.brand
+        }
+    }
+
+    var body: some View {
+        CopareCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: "person.2.wave.2")
+                        .foregroundStyle(CopareTheme.brand)
+                    Text("Mediation requested")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(action.status.label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(statusColor.opacity(0.12), in: Capsule())
+                }
+
+                Text("From \(action.creatorName(using: memberDirectory)) to \(action.assigneeName(using: memberDirectory))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                MediationHistorySection(action: action)
+
+                if action.status == .mediationInProgress || action.status == .parentApprovalPending || action.status == .confirmed {
+                    MediationThreadSection(
+                        messages: mediationMessages,
+                        currentUserId: currentUserId,
+                        memberDirectory: memberDirectory,
+                        canPost: isMediator && action.status == .mediationInProgress,
+                        draft: $mediatorDraft,
+                        isSending: isSendingMediatorMessage,
+                        onSend: sendMediatorMessage
+                    )
+
+                    if isMediator && action.status == .mediationInProgress {
+                        Text("Your role is to help find a solution that works for everyone — not to take sides.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if action.status == .parentApprovalPending {
+                    ParentApprovalStatusView(action: action)
+                }
+
+                if action.status == .pending, isAssignee {
+                    Button("Respond to topic") {
+                        showRespondSheet = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(CopareTheme.brand)
+                    .disabled(isSubmitting)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                if action.status == .mediationInProgress, isMediator {
+                    Button("Propose resolution") {
+                        showResolveSheet = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(CopareTheme.sage)
+                    .disabled(isSubmitting)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                if action.status == .parentApprovalPending, isParent,
+                   !action.hasApprovedResolution(role: currentUserRole) {
+                    HStack(spacing: 12) {
+                        Button("Decline resolution") {
+                            showDeclineResolutionSheet = true
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isSubmitting)
+
+                        Button("Approve resolution") {
+                            onApproveResolution()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(CopareTheme.sage)
+                        .disabled(isSubmitting)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                Text(action.createdAt, style: .time)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task(id: "\(action.mediatorThreadRootId ?? "")-\(mediationRefreshToken)") {
+            guard action.mediatorThreadRootId != nil else { return }
+            mediationMessages = await onLoadMessages()
+        }
+        .onChange(of: action.status) { _, _ in
+            Task {
+                guard action.mediatorThreadRootId != nil else { return }
+                mediationMessages = await onLoadMessages()
+            }
+        }
+        .sheet(isPresented: $showRespondSheet) {
+            RespondToMediationView(isSubmitting: isSubmitting) { response in
+                onRespond(response)
+                showRespondSheet = false
+            }
+        }
+        .sheet(isPresented: $showResolveSheet) {
+            ResolveMediationView(isSubmitting: isSubmitting) { resolution in
+                onResolve(resolution)
+                showResolveSheet = false
+            }
+        }
+        .sheet(isPresented: $showDeclineResolutionSheet) {
+            DeclineMediationResolutionView(isSubmitting: isSubmitting) { reason in
+                onDeclineResolution(reason)
+                showDeclineResolutionSheet = false
+            }
+        }
+    }
+
+    private func sendMediatorMessage() {
+        let text = mediatorDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+
+        isSendingMediatorMessage = true
+        Task {
+            if let message = await onSendMessage(text) {
+                mediatorDraft = ""
+                if !mediationMessages.contains(where: { $0.id == message.id }) {
+                    mediationMessages.append(message)
+                }
+            }
+            isSendingMediatorMessage = false
+        }
+    }
+}
+
+private struct MediationHistorySection: View {
+    let action: ConversationAction
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ActionHistoryBlock(title: "Topic for mediation", text: action.statement)
+
+            if let response = action.responseNote.nilIfBlank {
+                ActionHistoryBlock(title: "Co-parent's response", text: response)
+            }
+
+            if let resolution = action.resolutionText.nilIfBlank {
+                ActionHistoryBlock(
+                    title: "Proposed resolution",
+                    text: resolution,
+                    style: action.status == .confirmed ? .confirmed : .normal
+                )
+            }
+        }
+    }
+}
+
+private struct ParentApprovalStatusView: View {
+    let action: ConversationAction
+
+    var body: some View {
+        HStack(spacing: 12) {
+            approvalChip(label: MemberRole.parentA.label, approved: action.parentAApprovedAt != nil)
+            approvalChip(label: MemberRole.parentB.label, approved: action.parentBApprovedAt != nil)
+        }
+    }
+
+    private func approvalChip(label: String, approved: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: approved ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(approved ? CopareTheme.sage : .secondary)
+            Text(label)
+                .font(.caption)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(.systemGray6), in: Capsule())
+    }
+}
+
+private struct MediationThreadSection: View {
+    let messages: [Message]
+    let currentUserId: String
+    let memberDirectory: MemberDirectory
+    let canPost: Bool
+    @Binding var draft: String
+    let isSending: Bool
+    let onSend: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Mediator discussion")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if messages.isEmpty {
+                Text("No mediator messages yet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(messages) { message in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(message.senderName(using: memberDirectory))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(message.body)
+                                .font(.footnote)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+
+            if canPost {
+                HStack(spacing: 8) {
+                    TextField("Message…", text: $draft, axis: .vertical)
+                        .lineLimit(1...3)
+                        .textFieldStyle(.roundedBorder)
+                    Button(action: onSend) {
+                        Image(systemName: "arrow.up.circle.fill")
+                    }
+                    .disabled(isSending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+struct RespondToMediationView: View {
     @Environment(\.dismiss) private var dismiss
 
     let isSubmitting: Bool
-    let onSubmit: (String) async -> Bool
+    let onRespond: (String) -> Void
 
-    @State private var statement = ""
+    @State private var response = ""
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: CopareTheme.sectionSpacing) {
-                    CopareCard {
-                        VStack(alignment: .leading, spacing: 14) {
-                            CopareSectionHeader(
-                                title: "Confirmation request",
-                                subtitle: "Ask your co-parent to officially confirm a statement."
-                            )
-
-                            TextEditor(text: $statement)
-                                .frame(minHeight: 120)
-                                .padding(8)
-                                .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 12))
-                        }
+            Form {
+                Section {
+                    TextField("Your response to the topic", text: $response, axis: .vertical)
+                        .lineLimit(4...8)
+                } footer: {
+                    Text("Share your perspective so mediators can help find a fair solution.")
+                }
+            }
+            .navigationTitle("Respond to mediation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Submit") {
+                        onRespond(response.trimmingCharacters(in: .whitespacesAndNewlines))
                     }
+                    .disabled(isSubmitting || response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
 
-                    CoparePrimaryButton(
-                        title: "Request confirmation",
-                        isLoading: isSubmitting,
-                        isDisabled: statement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ) {
-                        Task {
-                            if await onSubmit(statement) {
-                                dismiss()
-                            }
+struct ResolveMediationView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let isSubmitting: Bool
+    let onResolve: (String) -> Void
+
+    @State private var resolution = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Proposed resolution", text: $resolution, axis: .vertical)
+                        .lineLimit(4...10)
+                } footer: {
+                    Text("Describe a solution that works for both parents. Both parents must approve before it is final.")
+                }
+            }
+            .navigationTitle("Propose resolution")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Submit") {
+                        onResolve(resolution.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
+                    .disabled(isSubmitting || resolution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+struct DeclineMediationResolutionView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let isSubmitting: Bool
+    let onDecline: (String) -> Void
+
+    @State private var reason = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Reason for declining", text: $reason, axis: .vertical)
+                        .lineLimit(3...6)
+                } footer: {
+                    Text("Explain why this resolution does not work for you.")
+                }
+            }
+            .navigationTitle("Decline resolution")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Decline") {
+                        onDecline(reason.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
+                    .disabled(isSubmitting || reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+struct CreateMediationRequestView: View {
+    let isSubmitting: Bool
+    let onSubmit: (String) async -> Bool
+    var onComplete: () -> Void = {}
+
+    @State private var topic = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: CopareTheme.sectionSpacing) {
+                CopareCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        CopareSectionHeader(
+                            title: "Mediation request",
+                            subtitle: "Ask your co-parent to respond, then mediators will help resolve the issue."
+                        )
+
+                        TextEditor(text: $topic)
+                            .frame(minHeight: 120)
+                            .padding(8)
+                            .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+
+                CoparePrimaryButton(
+                    title: "Request mediation",
+                    isLoading: isSubmitting,
+                    isDisabled: topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ) {
+                    Task {
+                        if await onSubmit(topic) {
+                            onComplete()
                         }
                     }
                 }
-                .padding(.horizontal, CopareTheme.horizontalPadding)
-                .padding(.vertical, 16)
             }
-            .copareScreenBackground()
+            .padding(.horizontal, CopareTheme.horizontalPadding)
+            .padding(.vertical, 16)
+        }
+        .copareScreenBackground()
+        .navigationTitle("Mediation request")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct ChatActionsFlowView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let isSubmitting: Bool
+    let onCreateConfirmation: (String) async -> Bool
+    let onCreateMediation: (String) async -> Bool
+
+    @State private var path = NavigationPath()
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ChatActionsMenuView { kind in
+                path.append(kind)
+            }
+            .navigationTitle("Chat actions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
             }
+            .navigationDestination(for: ChatActionKind.self) { kind in
+                switch kind {
+                case .confirmationRequest:
+                    CreateConfirmationRequestView(
+                        isSubmitting: isSubmitting,
+                        onSubmit: onCreateConfirmation,
+                        onComplete: { dismiss() }
+                    )
+                case .mediationRequest:
+                    CreateMediationRequestView(
+                        isSubmitting: isSubmitting,
+                        onSubmit: onCreateMediation,
+                        onComplete: { dismiss() }
+                    )
+                }
+            }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+}
+
+private struct ChatActionsMenuView: View {
+    let onSelect: (ChatActionKind) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: CopareTheme.sectionSpacing) {
+                CopareSectionHeader(
+                    title: "Choose an action",
+                    subtitle: "Structured actions help you and your co-parent agree on important decisions."
+                )
+
+                CopareCard {
+                    VStack(spacing: 0) {
+                        ForEach(Array(ChatActionKind.menuCases.enumerated()), id: \.element.id) { index, kind in
+                            Button {
+                                onSelect(kind)
+                            } label: {
+                                ChatActionMenuRow(kind: kind)
+                            }
+                            .buttonStyle(.plain)
+
+                            if index < ChatActionKind.menuCases.count - 1 {
+                                Divider()
+                                    .padding(.vertical, 8)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, CopareTheme.horizontalPadding)
+            .padding(.vertical, 16)
+        }
+        .copareScreenBackground()
+    }
+}
+
+private struct ChatActionMenuRow: View {
+    let kind: ChatActionKind
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: kind.symbolName)
+                .font(.title3)
+                .foregroundStyle(CopareTheme.brand)
+                .frame(width: 36, height: 36)
+                .background(CopareTheme.brand.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(kind.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(CopareTheme.textPrimary)
+                Text(kind.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(CopareTheme.textSecondary)
+                    .multilineTextAlignment(.leading)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+struct CreateConfirmationRequestView: View {
+    let isSubmitting: Bool
+    let onSubmit: (String) async -> Bool
+    var onComplete: () -> Void = {}
+
+    @State private var statement = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: CopareTheme.sectionSpacing) {
+                CopareCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        CopareSectionHeader(
+                            title: "Confirmation request",
+                            subtitle: "Ask your co-parent to officially confirm a statement."
+                        )
+
+                        TextEditor(text: $statement)
+                            .frame(minHeight: 120)
+                            .padding(8)
+                            .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+
+                CoparePrimaryButton(
+                    title: "Request confirmation",
+                    isLoading: isSubmitting,
+                    isDisabled: statement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ) {
+                    Task {
+                        if await onSubmit(statement) {
+                            onComplete()
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, CopareTheme.horizontalPadding)
+            .padding(.vertical, 16)
+        }
+        .copareScreenBackground()
+        .navigationTitle("Confirmation request")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

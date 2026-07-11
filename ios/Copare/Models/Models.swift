@@ -54,6 +54,10 @@ struct MemberDirectory: Sendable {
     func name(for userId: String) -> String {
         resolvedName(userId: userId)
     }
+
+    func member(for userId: String) -> GroupMember? {
+        byUserId[userId]
+    }
 }
 
 enum MemberRole: String, Codable, CaseIterable, Sendable {
@@ -120,6 +124,10 @@ enum MemberRole: String, Codable, CaseIterable, Sendable {
 
     var isParent: Bool {
         self == .parentA || self == .parentB
+    }
+
+    var isMediator: Bool {
+        self == .mediatorA || self == .mediatorB
     }
 }
 
@@ -254,6 +262,55 @@ struct Message: Codable, Identifiable, Sendable {
 
 enum ConversationActionType: String, Codable, Sendable {
     case confirmationRequest = "confirmation_request"
+    case mediationRequest = "mediation_request"
+}
+
+/// Parent-selectable chat actions shown from the composer + menu.
+enum ChatActionKind: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case confirmationRequest
+    case mediationRequest
+
+    var id: String { rawValue }
+
+    static var menuCases: [ChatActionKind] {
+        allCases.filter(\.isAvailable)
+    }
+
+    var title: String {
+        switch self {
+        case .confirmationRequest: "Confirmation request"
+        case .mediationRequest: "Mediation request"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .confirmationRequest:
+            "Ask your co-parent to officially confirm a statement."
+        case .mediationRequest:
+            "Request mediation from your co-parent's mediators on a topic."
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .confirmationRequest: "checkmark.seal"
+        case .mediationRequest: "person.2.wave.2"
+        }
+    }
+
+    var isAvailable: Bool {
+        switch self {
+        case .confirmationRequest, .mediationRequest: true
+        }
+    }
+
+    var conversationActionType: ConversationActionType? {
+        switch self {
+        case .confirmationRequest: .confirmationRequest
+        case .mediationRequest: .mediationRequest
+        }
+    }
 }
 
 enum ConversationActionStatus: String, Codable, Sendable {
@@ -261,6 +318,8 @@ enum ConversationActionStatus: String, Codable, Sendable {
     case confirmed
     case declined
     case alternativePending = "alternative_pending"
+    case mediationInProgress = "mediation_in_progress"
+    case parentApprovalPending = "parent_approval_pending"
 
     var label: String {
         switch self {
@@ -268,6 +327,8 @@ enum ConversationActionStatus: String, Codable, Sendable {
         case .confirmed: "Confirmed"
         case .declined: "Declined"
         case .alternativePending: "Alternative proposed"
+        case .mediationInProgress: "In mediation"
+        case .parentApprovalPending: "Awaiting parent approval"
         }
     }
 }
@@ -282,6 +343,10 @@ struct ConversationAction: Codable, Identifiable, Sendable {
     let responseNote: String?
     let alternativeStatement: String?
     let acceptedStatement: String?
+    let resolutionText: String?
+    let mediatorThreadRootId: String?
+    let parentAApprovedAt: Date?
+    let parentBApprovedAt: Date?
     let createdBy: String
     let createdByDisplayName: String?
     let assignedTo: String
@@ -310,6 +375,19 @@ struct ConversationAction: Codable, Identifiable, Sendable {
         responseNote.nilIfBlank != nil
             || alternativeStatement.nilIfBlank != nil
             || acceptedStatement.nilIfBlank != nil
+    }
+
+    var hasMediationHistory: Bool {
+        responseNote.nilIfBlank != nil
+            || resolutionText.nilIfBlank != nil
+    }
+
+    func hasApprovedResolution(role: MemberRole?) -> Bool {
+        switch role {
+        case .parentA: parentAApprovedAt != nil
+        case .parentB: parentBApprovedAt != nil
+        default: false
+        }
     }
 }
 
