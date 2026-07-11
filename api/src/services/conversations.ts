@@ -33,6 +33,7 @@ export async function listRecentConversations(
        SELECT DISTINCT ON (m.conversation_id)
               m.conversation_id,
               m.created_at AS last_message_at,
+              m.body AS last_message_preview,
               m.sender_id AS last_message_sender_id,
               ${profileDisplayName('p')} AS last_message_sender_display_name
        FROM messages m
@@ -44,6 +45,7 @@ export async function listRecentConversations(
      SELECT uc.id, uc.group_id, uc.title, uc.created_by, uc.created_at,
             lm.last_message_at,
             lm.last_message_sender_display_name,
+            lm.last_message_preview,
             COALESCE(ucnt.unread_count, 0) AS unread_count
      FROM user_conversations uc
      LEFT JOIN unread_counts ucnt ON ucnt.conversation_id = uc.id

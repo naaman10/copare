@@ -301,11 +301,8 @@ struct RecentConversationRow: View {
                         }
                     }
 
-                    if let senderName = recent.lastMessageSenderDisplayName.nilIfBlank {
-                        Text(senderName)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    if let preview = recent.lastMessagePreview.nilIfBlank {
+                        lastMessageLine(senderName: recent.lastMessageSenderDisplayName, preview: preview)
                     }
                 }
 
@@ -313,6 +310,21 @@ struct RecentConversationRow: View {
                     UnreadBadge(count: recent.unreadCount)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func lastMessageLine(senderName: String?, preview: String) -> some View {
+        if let senderName = senderName.nilIfBlank {
+            (Text(senderName).fontWeight(.semibold) + Text(" \(preview)"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        } else {
+            Text(preview)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
         }
     }
 
